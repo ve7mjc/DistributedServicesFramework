@@ -58,14 +58,13 @@ class Supervisor():
 
     _config_filename = None
     _config = None
+    _config_required = False
 
-    def __init__(self, app_name = None):
+    def __init__(self, **kwargs):
         
-        # application name for the purpose of logging, reporting, and more
-        if app_name: self.app_name = app_name
-        else: 
-            # pull application name from script name without extension
-            self.app_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
+        # process keyword arguments from class initializer
+        _config_required = kwargs.get("config_required", False)
+        self.app_name = kwargs.get("app_name", os.path.splitext(os.path.basename(sys.argv[0]))[0])
 
         # Commandline Arguments
         # application may access arguments via self.cli_args
@@ -83,6 +82,8 @@ class Supervisor():
         # search for a number of possible config filenames
         # TODO: add support for cli argument config file
 
+        self.config = None
+
         possible_config_filenames = [
             "config.ini",
             "config.json",
@@ -98,34 +99,61 @@ class Supervisor():
         
         if self._config_filename:
             config = configparser.ConfigParser(allow_no_value=True)
+            
+            # This optionxform method transforms option names on every read, 
+            # get, or set operation. The default converts the name to lowercase. 
+            # This also means that when a configuration file gets written, 
+            # all keys will be lowercase. 
+            # We override this method to prevent this transformation
+            config.optionxform = lambda option: option
             try:
-                config.read(self._config_filename, )
+                config.read(self._config_filename)
                 self.config = config
             except Exception as e:
                 print("unable to process config file %s: %s" % (self._config_filename,e))
 
+        if self._config_required and not self.config:
+            raise Exception("config required but not available")
+
+        # Importance of Handling the Logging "root logger"; at what point in the
+        # application execution as well as how it is configured.
+        #
         # By default the root logger is set to WARNING and all loggers you define
         # inherit that value.
-        #logging.root.setLevel(logging.NOTSET)
-        
-        # logging.basicConfig - Does basic configuration for the logging system by creating a StreamHandler 
-        # with a default Formatter and adding it to the root logger. 
-        # The functions debug(), info(), warning(), error() and critical() will call basicConfig() 
-        # automatically if no handlers are defined for the root logger.
-        # This function does nothing if the root logger already has handlers configured for it.
-        #logging.basicConfig(level=logging.NOTSET)
+        #
+        # logging.basicConfig - Does basic configuration for the logging system 
+        # by creating a StreamHandler with a default Formatter and adding it 
+        # to the root logger. 
+        # The functions debug(), info(), warning(), error() and critical() 
+        # will call basicConfig() automatically if no handlers are defined 
+        # for the root logger.
+        #
+        # Many of the functions do nothing if the root logger already has 
+        # handlers configured for it, for example:
        
-        # Configure Root Logger
-        # Take advantage of child logger events propogating upward
-        self.root_logger = logging.getLogger() # returns root logger if no name specified
+        # Get handle to root logger and configure
+        # We will take advantage of the events of root logger children 
+        # propogating upward to the root logger
+        # logging.getLogger() returns the root logger if no name specified
+        self.root_logger = logging.getLogger() 
         
         # some libraries have been observed adding a handler to the root logger before we do
+        # here we are only creating one if there are not currently any
+        # the StreamHandler appears to default to writing output to STDERR 
+        # so we pass sys.stdout
         if len(self.root_logger.handlers) == 0:
-            ch = logging.StreamHandler()
-            self.root_logger.addHandler(ch)
-            
+            coneole_handler = logging.StreamHandler(sys.stdout)
+            self.root_logger.addHandler(coneole_handler)
+        else:
+            # for thought - we could delete or clear the handlers?
+            print("notice: something may have beat us to the root logger as there is %s handler(s) of type %s!" 
+                % (len(self.root_logger.handlers), type(self.root_logger.handlers[0])))
+
         root_handler = self.root_logger.handlers[0]
-        formatter = logging.Formatter('%(asctime)s|%(name)s|%(levelname)s|%(message)s')
+        
+        # make sure that all children of the root logger will have a formatted {app_name}.{module_name}
+        root_logger_formatting = '%(asctime)s ' + self.app_name + '.%(name)s %(levelname)s %(message)s'
+        formatter = logging.Formatter(root_logger_formatting)
         root_handler.setFormatter(formatter)
         
         file_handler = logging.FileHandler('%s.log' % self.app_name.replace(" ", "_"))
@@ -133,7 +161,7 @@ class Supervisor():
         self.root_logger.addHandler(file_handler)
         
         # Configure logger for this module
-        self.logger = logging.getLogger(self.app_name + "." + type(self).__name__)        
+        self.logger = logging.getLogger(self.app_name + "." + type(self).__name__)
         self.logger.setLevel(logging.DEBUG)
         
         # now that logger is up we can report whether we are using a config file or not
@@ -151,11 +179,6 @@ class Supervisor():
         logger = logging.getLogger(logger_name)
         logger.setLevel(level)
         return logger
-        
-    def no_config_exception(self):
-        if not self.config:
-            raise Exception("config not available")
-        else: return
 
     def shutdown(self):
         self.service_monitor.stop()

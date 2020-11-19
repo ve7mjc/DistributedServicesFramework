@@ -2,23 +2,36 @@
 # Matthew Currie - Nov 2020
 
 import pika
-from ssl import SSLContext # invalid cert fix
-import threading
+
+#import threading
 import functools
 from datetime import datetime
-import json # for disk-based queue binding cache
+#import json # for disk-based queue binding cache
+#import logging
+#import time
+
+from AsynchronousAmqpClient import AsynchronousAmqpClient, ClientType
 
 # TAKE NOTE
 # self._connection.ioloop.start() runs in Thread::run()
 # this ioloop is blocking and there are no methods of this class
-# which are thread-safe unless they register a thread-safe callback
+# which are thread-safe unless they register a thread-safe callbacks
 # with the ioloop itself
 
-class AsynchronousAmqpConsumer(threading.Thread):
+# todo, if channel is closed on connect - it will not quit nicely (hangs)
+#2020-11-16 00:12:53,062|pika.channel|WARNING|Received remote Channel.Close (404): "NOT_FOUND - no queue 'weather_test' in vhost '/'" on <Channel number=1 OPEN conn=<SelectConnection OPEN transport=<pika.adapters.utils.io_services_utils._AsyncPlaintextTransport object at 0x7f0c659fcc10> params=<ConnectionParameters host=localhost port=5672 virtual_host=/ ssl=False>>>
+#2020-11-16 00:12:53,062|msc-processor.Consumer|INFO|Closing connection
+#2020-11-16 00:12:53,064|msc-processor.Consumer|WARNING|Connection closed, reconnect necessary: (200, 'Normal shutdown')
+#2020-11-16 00:12:53,064|msc-processor.Consumer|DEBUG|requested a threadsafe callback for ioloop to call stop_consuming()
+#2020-11-16 00:12:59,588|msc-processor.Consumer|DEBUG|requested a threadsafe callback for ioloop to call stop_consuming()
+
+class AsynchronousAmqpConsumer(AsynchronousAmqpClient):
 
     _exchange = 'message'
     EXCHANGE_TYPE = 'topic'
     _queue = 'unnamed_queue'
+    
+    _declare_queue = True # should we attempt to create the queue on the server?
     _bindings = []
     _bindings_cache = None
     _bindings_to_cleanup = []
@@ -28,307 +41,55 @@ class AsynchronousAmqpConsumer(threading.Thread):
     should_reconnect = False
     last_message_received_time = None
     _application_name = None
-
-    def __init__(self, application_name, amqp_url, logger):
-        """Create a new instance of the consumer class, passing in the AMQP
-        URL used to connect to RabbitMQ.
-        :param str amqp_url: The AMQP url to connect with
-        """
-        self._application_name = application_name
-        self.was_consuming = False
-        self._connection = None
-        self._channel = None
-        self._closing = False
-        self._consumer_tag = None
-        self._url = amqp_url
-        self._consuming = False
-        # In production, experiment with higher prefetch values
-        # for higher consumer throughput
-        self._prefetch_count = 1
-        
-        if logger:
-            self.logger = logger
-        else:
-            print("WARNING: Making our own logger!")
-            self.logger = logging.getLogger()
-            
-        # dynamic creation of queue bindings cache file
-        if self._application_name:
-            self._bindings_cache_filename = "%s-bindings.cache" % self._application_name
-        else:
-            self._bindings_cache_filename = "bindings.cache" % self._application_name
-        
-        super().__init__()
-
-    def connect(self):
-        """This method connects to RabbitMQ, returning the connection handle.
-        When the connection is established, the on_connection_open method
-        will be invoked by pika.
-        :rtype: pika.SelectConnection
-        """
-        self.logger.info('Connecting to AMQP Broker: %s', self._url)
-        parameters = pika.URLParameters(self._url)
-        
-        # add this to bypass certificate errors
-        parameters.ssl_options = pika.SSLOptions(SSLContext())
-
-        return pika.SelectConnection(
-            parameters=parameters,
-            on_open_callback=self.on_connection_open,
-            on_open_error_callback=self.on_connection_open_error,
-            on_close_callback=self.on_connection_closed)
-
-    def close_connection(self):
-        self._consuming = False
-        if self._connection.is_closing or self._connection.is_closed:
-            self.logger.info('Connection is closing or already closed')
-        else:
-            self.logger.info('Closing connection')
-            self._connection.close()
-
-    def on_connection_open(self, _unused_connection):
-        """This method is called by pika once the connection to RabbitMQ has
-        been established. It passes the handle to the connection object in
-        case we need it, but in this case, we'll just mark it unused.
-        :param pika.SelectConnection _unused_connection: The connection
-        """
-        self.logger.debug('connection open')
-        self.should_reconnect = False # clear the flag so we are able to shut down
-        self.open_channel()
-
-    def on_connection_open_error(self, _unused_connection, err):
-        """This method is called by pika if the connection to RabbitMQ
-        can't be established.
-        :param pika.SelectConnection _unused_connection: The connection
-        :param Exception err: The error
-        """
-        self.logger.error('Connection open failed: %s', err)
-        self.reconnect()
-
-    def on_connection_closed(self, _unused_connection, reason):
-        """This method is invoked by pika when the connection to RabbitMQ is
-        closed unexpectedly. Since it is unexpected, we will reconnect to
-        RabbitMQ if it disconnects.
-        :param pika.connection.Connection connection: The closed connection obj
-        :param Exception reason: exception representing reason for loss of
-            connection.
-        """
-        self._channel = None
-        if self._closing:
-            self._connection.ioloop.stop()
-        else:
-            self.logger.warning('Connection closed, reconnect necessary: %s', reason)
-            self.reconnect()
-
-    def reconnect(self):
-        """Will be invoked if the connection can't be opened or is
-        closed. Indicates that a reconnect is necessary then stops the
-        ioloop.
-        """
-        self.should_reconnect = True
-        self.stop()
-
-    def open_channel(self):
-        """Open a new channel with RabbitMQ by issuing the Channel.Open RPC
-        command. When RabbitMQ responds that the channel is open, the
-        on_channel_open callback will be invoked by pika.
-        """
-        #logger.info('Creating a new channel')
-        self._connection.channel(on_open_callback=self.on_channel_open)
-
-    def add_binding(self, queue, exchange, routing_key):
-        binding = {}
-        binding['queue'] = queue
-        binding['exchange'] = exchange
-        binding['routing_key'] = routing_key
-        self._bindings.append(binding)
-
-    def on_channel_open(self, channel):
-        """This method is invoked by pika when the channel has been opened.
-        The channel object is passed in so we can make use of it.
-        Since the channel is now open, we'll declare the exchange to use.
-        :param pika.channel.Channel channel: The channel object
-        """
-        #self.logger.info('Channel opened')
-        self._channel = channel
-        self.add_on_channel_close_callback()
-        
-        #self.setup_exchange(self._exchange)
-        self.setup_queue(self._queue) # skip exchange setup
-
-    def add_on_channel_close_callback(self):
-        """This method tells pika to call the on_channel_closed method if
-        RabbitMQ unexpectedly closes the channel.
-        """
-        self._channel.add_on_close_callback(self.on_channel_closed)
-
-    def on_channel_closed(self, channel, reason):
-        """Invoked by pika when RabbitMQ unexpectedly closes the channel.
-        Channels are usually closed if you attempt to do something that
-        violates the protocol, such as re-declare an exchange or queue with
-        different parameters. In this case, we'll close the connection
-        to shutdown the object.
-        :param pika.channel.Channel: The closed channel
-        :param Exception reason: why the channel was closed
-        """
-        #if reason.reply_code != 0:
-        #    self.logger.warning('Channel %i was closed unexpectedly: code=%s, reason=%s', channel, reason.reply_code, reason.reply_text)
-        self.close_connection()
-
-    def setup_exchange(self, exchange_name):
-        """Setup the exchange on RabbitMQ by invoking the Exchange.Declare RPC
-        command. When it is complete, the on_exchange_declareok method will
-        be invoked by pika.
-        :param str|unicode exchange_name: The name of the exchange to declare
-        """
-        self.logger.debug('Declaring exchange: %s', exchange_name)
-        # Note: using functools.partial is not required, it is demonstrating
-        # how arbitrary data can be passed to the callback when it is called
-        cb = functools.partial(
-            self.on_exchange_declareok, userdata=exchange_name)
-        self._channel.exchange_declare(
-            exchange=exchange_name,
-            exchange_type=self.EXCHANGE_TYPE,
-            callback=cb)
-
-    def on_exchange_declareok(self, _unused_frame, userdata):
-        """Invoked by pika when RabbitMQ has finished the Exchange.Declare RPC
-        command.
-        :param pika.Frame.Method unused_frame: Exchange.DeclareOk response frame
-        :param str|unicode userdata: Extra user data (exchange name)
-        """
-        self.logger.info('Exchange declared: %s', userdata)
-        self.setup_queue(self._queue)
-
-    def setup_queue(self, queue_name):
-        """Setup the queue on RabbitMQ by invoking the Queue.Declare RPC
-        command. When it is complete, the on_queue_declareok method will
-        be invoked by pika.
-        :param str|unicode queue_name: The name of the queue to declare.
-        """
-        cb = functools.partial(self.on_queue_declareok, userdata=queue_name)
-        self._channel.queue_declare(queue=queue_name, callback=cb, durable=self._durable_queue)
-
-    # write/load a json file from disk containing a list of queues and bindings
-    # for the purpose of cleaning up should our application request different
-    def write_queue_bindings_cache(self):
-        if self._bindings_cache_filename and len(self._bindings):
-            bindings_cache = []
-            for binding in self._bindings:
-                bindings_cache.append(binding)
-            with open(self._bindings_cache_filename, 'w') as outfile:
-                json.dump(bindings_cache, outfile, indent=4)
-                
-    def load_queue_bindings_cache(self):
-        if self._bindings_cache_filename:
-            try:
-                with open(self._bindings_cache_filename) as json_cache:
-                    bindings_cache = json.load(json_cache)
-                    self.logger.debug("loaded %s queue bindings from %s: " % (len(bindings_cache), self._bindings_cache_filename))
-                    if len(bindings_cache):
-                        return bindings_cache
-                    else:
-                        return []
-            except Exception as e:
-                raise Exception(e)
-        raise Exception("self._bindings_cache_filename not populated")            
     
-    def do_queue_bindings_cleanup(self, in_callback=False):
-        # callback will be populated by the sender and so do our 
-        # setup and initial action with callback, or proceed onward
-        # if there is nothing to do
-        if not in_callback:
-            self._bindings_to_cleanup = []
-            try:
-                self._bindings_cache = self.load_queue_bindings_cache()
-                
-                # create a list of each binding which needs to be cleaned up 
-                for cached_binding in self._bindings_cache:
-                    cleanup = True
-                    for binding in self._bindings:
-                        if cached_binding == binding:
-                            cleanup = False
-                    if cleanup:
-                        self._bindings_to_cleanup.append(cached_binding)
+    _reconnect_attempts = 0
+    
+    # In production, experiment with higher prefetch values
+    # for higher consumer throughput
+    _prefetch_count = 1
+    
+    # leave in classdef to make child class init more likely
+    _ack_disabled_max_preflight = False
+    _prefetch_count_pre_disable = None
 
-                num_bindings_to_cleanup = len(self._bindings_to_cleanup)
-                self.logger.debug("there are %s queue bindings to cleanup" % num_bindings_to_cleanup)
-                
-                # check to see if there are bindings to clean AND we have
-                # been directed to do so
-                if self._bindings_to_cleanup and self._do_bindings_cleanup:
-                    binding = self._bindings_to_cleanup.pop()
-                    self.logger.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
-                    self._channel.queue_unbind(binding['queue'], binding['exchange'], routing_key=binding['routing_key'], callback=self.do_queue_bindings_cleanup)
-                
-                # write cache since we either did not load one, or we have no 
-                # bindings left to cleanup
-                if not self._bindings_to_cleanup:
-                    self.write_queue_bindings_cache()
-
-            except Exception as e:
-                self.logger.error(e)
-
-        else: # this is a callback return!
-
-            if len(self._bindings_to_cleanup):
-                binding = self._bindings_to_cleanup.pop()
-                self.logger.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
-                self._channel.queue_unbind(binding['queue'], binding['exchange'], routing_key=binding['routing_key'], callback=self.do_queue_bindings_cleanup)
-            else:
-                self.logger.debug("done unbinding")
-                # only write a cache when we have proven to remove bindings
-                self.write_queue_bindings_cache() 
-
-    # matt added to handle multiple routing keys
-    # Queue.BindOk response frame will be passed when in a callback
-    def do_queue_binds(self, callback=None):
-
-        # called each time we return from a callback
-        # check if we are in a callback
-        if type(callback) is pika.frame.Method:
-            if type(callback.method) is pika.spec.Queue.BindOk:
-                self.logger.debug('routing key binded: %s', self._bindings[self._queues_bound-1])
-            else:
-                self.logger.error("routing key NOT binded: %s", self._bindings[self._queues_bound-1])
-
-        # check if we are either done, or have no bindings to do
-        if self._queues_bound < len(self._bindings):
-            binding = self._bindings[self._queues_bound]
-            self.logger.debug("channel.queue_bind(%s,%s,routing_key=%s)" % (binding['queue'], binding['exchange'], binding['routing_key']))
-            self._channel.queue_bind(binding['queue'], binding['exchange'], routing_key=binding['routing_key'], callback=self.do_queue_binds)
-            self._queues_bound += 1
+    def __init__(self, **kwargs):
+        
+#        self.was_consuming = False
+#        self._closing = False
+#        self._consumer_tag = None
+#        self._consuming = False
+        
+        super().__init__(ClientType.Consumer, **kwargs)
+   
+    # called once we have started the consumer.
+    # The TCP or TLS connection is established, channels are opened, exchanges,
+    # queues, and bindings are declared, qos(prefetch) is set
+    def ready(self):
+        self.logger.info("consumer %s ready" % self._application_name)
+        self.set_qos(self._prefetch_count)
+        self.start_consuming()
+        
+    # called prior to connection
+    def prepare_connection(self):
+        pass
+        
+    # testing mode
+    # disable message ack and set pre_fetch to 0 which will
+    # result in the flight of potentially the entire queue
+    def enable_no_ack_max_prefetch_test_mode(self, value=True):
+        self._ack_disabled_max_preflight = value
+        if self._ack_disabled_max_preflight:
+            self._prefetch_count_pre_disable = self._prefetch_count
+            self._prefetch_count = 0
+            self.logger.info("enable_no_ack_test_mode(True) called; disabling Basic.Ack RPC calls and setting prefetch to max (0) for testing")
         else:
-            self.logger.debug("done adding %s routing_key bindings" % (int(self._queues_bound)))
-            self.do_queue_bindings_cleanup()
-            self.set_qos() # set prefetch
+            self._prefetch_count = self._prefetch_count_pre_disable
+            self._prefetch_count_pre_disable = None
+            self.logger.info("enable_no_ack_test_mode(False) called; enabling Basic.Ack RPC calls and setting prefetch back to %0" % self._prefetch_count_pre_disable)
 
-    def on_queue_declareok(self, _unused_frame, userdata):
-        """Method invoked by pika when the Queue.Declare RPC call made in
-        setup_queue has completed. In this method we will bind the queue
-        and exchange together with the routing key by issuing the Queue.Bind
-        RPC command.
-        :param pika.frame.Method _unused_frame: The Queue.DeclareOk frame
-        :param str|unicode userdata: Extra user data (queue name)
-        """
-        self.logger.debug('declared queue : %s', userdata)
-        self.do_queue_binds()
-
-#    def on_bindok(self, _unused_frame, userdata):
-#        """Invoked by pika when the Queue.Bind method has completed. At this
-#        point we will set the prefetch count for the channel.
-#        :param pika.frame.Method _unused_frame: The Queue.BindOk response frame
-#        :param str|unicode userdata: Extra user data (queue name)
-#        """
-#        pass
-
-    def set_qos(self):
-        """This method sets up the consumer prefetch to only be delivered
-        one message at a time. The consumer must acknowledge this message
-        before RabbitMQ will deliver another one. You should experiment
-        with different prefetch values to achieve desired performance.
-        """
-        self.logger.debug("sending Basic.QoS prefetch request for %d", self._prefetch_count)
+    def set_qos(self, prefetch_count):
+        # Configure consumer prefetch value
+        self.logger.debug("sending Basic.QoS (message prefetch) request for %d", self._prefetch_count)
         self._channel.basic_qos(
             prefetch_count=self._prefetch_count, callback=self.on_basic_qos_ok)
 
@@ -350,7 +111,6 @@ class AsynchronousAmqpConsumer(threading.Thread):
         cancel consuming. The on_message method is passed in as a callback pika
         will invoke when a message is fully received.
         """
-        self.logger.info("consumer ready")
         self.add_on_cancel_callback()
         self._consumer_tag = self._channel.basic_consume(
             self._queue, self._on_message, auto_ack=False)
@@ -376,7 +136,6 @@ class AsynchronousAmqpConsumer(threading.Thread):
         self.logger.info("make sure to reimplement ::on_message(self, _unused_channel, basic_deliver, properties, body) in your AsynchronousAmqpConsumer class")
 
     def _on_message(self, _unused_channel, basic_deliver, properties, body):
-
         # do stats and health checks
         self.last_message_received_time = datetime.now()
 
@@ -387,28 +146,33 @@ class AsynchronousAmqpConsumer(threading.Thread):
 
     # Acknowledge message delivery by sending a Basic.Ack RPC method for the delivery tag
     # do not call this from another thread (calling from on_message is OK)
-    def acknowledge_message(self, delivery_tag):    
-        try:
-            self._channel.basic_ack(delivery_tag)
-            self.logger.debug("writing an ack for %s to the channel" % delivery_tag)
-        except pika.exceptions.ChannelWrongStateError:
-            self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
+    def acknowledge_message(self, delivery_tag):
+        
+        # this functionality is added for testing and development purposes
+        if hasattr(self,"_ack_disabled_max_preflight") and self._ack_disabled_max_preflight: 
+            self.logger.info("ack was requested for delivery_tag=%s but we are set to _ack_disabled=True" % delivery_tag)
+            return # log and return
+        else:
+            try:
+                self._channel.basic_ack(delivery_tag)
+                self.logger.debug("writing an ack for %s to the channel" % delivery_tag)
+            except pika.exceptions.ChannelWrongStateError:
+                self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
 
     # requesting a channel write a Basic.Ack RPC method is not thread safe
     # and must be requested as a threadsafe callback from the ioloop
     def threadsafe_ack_message(self, delivery_tag):
-        cb = functools.partial(
-            self.acknowledge_message, delivery_tag)
+        cb = functools.partial(self.acknowledge_message, delivery_tag)
         self._connection.ioloop.add_callback_threadsafe(cb)
 
     # Send Basic.Cancel RPC command to RabbitMQ
     # this is only being called by the stop() method
-    def stop_consuming(self):
+    # formerly stop_consuming
+    def stop_activity(self):
         self._closing = True
         if self._channel:
             self.logger.debug('sending Basic.Cancel RPC command')
-            cb = functools.partial(
-                self.on_cancelok, userdata=self._consumer_tag)
+            cb = functools.partial(self.on_cancelok, userdata=self._consumer_tag)
             self._channel.basic_cancel(self._consumer_tag, cb)
 
     # RabbitMQ has acknowledged cancellation of the consumer with a
@@ -418,30 +182,6 @@ class AsynchronousAmqpConsumer(threading.Thread):
     def on_cancelok(self, _unused_frame, userdata):
         self._consuming = False
         self.logger.debug('RabbitMQ acknowledged the cancellation of the consumer: %s', userdata)
-        self.close_channel()
-
-    # Send Channel.Close RPC command to RabbitMQ for a clean close
-    def close_channel(self):
-        self.logger.debug('sending Channel.Close RPC command')
-        self._channel.close()
-
-    # this method is called by the thread worker
-    def run(self):        
-        
-        # reconnect logic
-        while (not self._closing) or (self.should_reconnect):
-            if self.should_reconnect:
-                self.logger.debug("waiting (5s) to reconnect.")
-                time.sleep(5)
-            self._connection = self.connect()
-            self._connection.ioloop.start()
-        
-        # we have completed work in this method
-        self.logger.debug('thread exiting..')
-
-    # add a thread-safe callback to the ioloop which will allow
-    # us to stop the ioloop from another thread. No methods are
-    # are thread-safe to interact with the ioloop!
-    def stop(self):
-        self.logger.debug('requested a threadsafe callback for ioloop to call stop_consuming()')
-        self._connection.ioloop.add_callback_threadsafe(self.stop_consuming)
+        if self._channel:
+            self.close_channel()
+        else: self.logger.debug("on_cancelok() going to close_channel() but already closed")
