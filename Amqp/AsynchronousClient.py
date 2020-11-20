@@ -34,7 +34,7 @@ class ClientType(Enum):
 # Open channel
 # 
 
-class AsynchronousAmqpClient(Thread):
+class AsynchronousClient(Thread):
 
     # Connection related
     _connection = None
@@ -65,16 +65,17 @@ class AsynchronousAmqpClient(Thread):
     def __init__(self, client_type, **kwargs):
 
         # disable pika logging for now
-        pika_logger = logging.getLogger("pika").setLevel(logging.CRITICAL)
+        pika_logger = logging.getLogger("pika").setLevel(logging.CRITICAL) # logging.CRITICAL
 
         self._client_type = client_type
 
         # process keyword arguments
         loglevel = kwargs.get("loglevel", logging.INFO)
+        loglevel = kwargs.get("level", loglevel) # alternate key name
         self._amqp_url = kwargs.get("url", self._amqp_url)
         self._host = kwargs.get("host", None)
         self._amqp_application_name = kwargs.get("amqp_app_name", None)
-        self.logger = kwargs.get("logger", None)
+#        self.logger = kwargs.get("logger", None)
         self._module_name = kwargs.get("module_name", None)
         self._connection_parameters = kwargs.get("connection_parameters", None)
         
@@ -88,8 +89,7 @@ class AsynchronousAmqpClient(Thread):
                 self._module_name = "AMQP-Client"
         
         # configure logging
-        if not self.logger:
-            self.logger = logging.getLogger(self._module_name)
+        self.logger = logging.getLogger(self._module_name)
         self.logger.setLevel(loglevel)
 
         # consumer specific?
@@ -146,16 +146,16 @@ class AsynchronousAmqpClient(Thread):
         return connection
 
     # reimplement me!
-    def ready(self):
+    def client_ready(self):
         pass
 
     # AMQP Client is read.
     # Connection and Channel are established and open
     # Exchanges, Queues, and Bindings are declared
     # QoS (Prefetch) is completed
-    def client_ready(self):
+    def _client_ready(self):
         self._reconnect_attempts = 0 # reset
-        self.ready()
+        self.client_ready()
 
     def close_connection(self):
         self.logger.debug('closing connection')
@@ -374,7 +374,7 @@ class AsynchronousAmqpClient(Thread):
                     # there are either no bindings to cleanup or we are 
                     # not directed to do so
                     self.write_queue_bindings_cache()
-                    self.client_ready()
+                    self._client_ready()
 
             except Exception as e:
                 self.logger.error(e)

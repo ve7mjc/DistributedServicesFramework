@@ -7,7 +7,8 @@ import functools # callbacks
 from queue import Queue
 from pika import BasicProperties
 
-from AsynchronousAmqpClient import AsynchronousAmqpClient, ClientType
+from Amqp.AsynchronousClient import AsynchronousClient, ClientType
+from Amqp.Message import Message
 
 # TAKE NOTE
 # self._connection.ioloop.start() runs in Thread::run()
@@ -15,50 +16,7 @@ from AsynchronousAmqpClient import AsynchronousAmqpClient, ClientType
 # which are thread-safe unless they register a thread-safe callback
 # with the ioloop itself
 
-class AmqpMessage():
-    
-    __exchange = None
-    __routing_key = None
-    __body = None
-    __properties = None
-    
-    @property
-    def exchange(self):
-        return self.__exchange
-        
-    @exchange.setter
-    def exchange(self,value):
-        self.__exchange = value
-        
-    @property
-    def routing_key(self):
-        return self.__routing_key
-        
-    @routing_key.setter
-    def routing_key(self,value):
-        self.__routing_key = value
-        
-    @property
-    def body(self):
-        return self.__body
-        
-    @body.setter
-    def body(self,value):
-        self.__body = value
-        
-    @property
-    def properties(self):
-        if not self.__properties:
-            return BasicProperties()
-        else:
-            return self.__properties
-
-    @properties.setter
-    def properties(self,value):
-        self.__properties = value
-        
-
-class AsynchronousAmqpProducer(AsynchronousAmqpClient):
+class AsynchronousProducer(AsynchronousClient):
   
     # Producer Specific Class Variables
     blocking_publish_response = Queue()
@@ -66,26 +24,25 @@ class AsynchronousAmqpProducer(AsynchronousAmqpClient):
     blocking_publish_mutex = Lock()
     blocking_publish_message_number = None
 
-    def __init__(self, application_name, **kwargs):
+    def __init__(self, **kwargs):
         
         # Producer Specific Initialization
         self._deliveries = None
         self._acked = None
         self._nacked = None
         self._message_number = None
+        self._application_name = kwargs.get("application_name", None)
         
         super().__init__(ClientType.Producer, **kwargs)
 
     # Underlying AMQP Client is read.
     # Connection and Channel is established
     # Exchanges, Queues, and Bindings are declared
-    def ready(self):
-        
+    def client_ready(self):     
         self.enable_delivery_confirmations()
         self.logger.info("producer is ready")
-        
-        # there may be messages waiting in the queue already
-        self.do_publish()
+
+        self.__publish_callback() # there may be messages waiting in the queue already
 
     def prepare_connection(self):
 
@@ -100,7 +57,7 @@ class AsynchronousAmqpProducer(AsynchronousAmqpClient):
         # The only way to turn this off is to close the channel and create a 
         # new one. When the message is confirmed from RabbitMQ, the
         # on_delivery_confirmation method will be invoked
-        self.logger.debug('Issuing Confirm.Select (Delivery Confirmation) RPC command')
+        self.logger.debug('Enabling Delivery Confirmations with Confirm.Select RPC command')
         self._channel.confirm_delivery(self.on_delivery_confirmation)
 
     def on_delivery_confirmation(self, method_frame):
@@ -128,6 +85,12 @@ class AsynchronousAmqpProducer(AsynchronousAmqpClient):
             self._acked += 1
         elif confirmation_type == 'nack':
             self._nacked += 1
+            
+        # if we are connected to a Consumer Queue with outstanding messages?
+        # the consumer tag should follow along though so we do not refer to
+        # delivery_tags from different consumer_tags
+        
+        
 
         # KEEP FOR REF
         # self._connection.ioloop.call_later(self.PUBLISH_INTERVAL,
@@ -144,52 +107,61 @@ class AsynchronousAmqpProducer(AsynchronousAmqpClient):
 #            self.logger.debug('Published message producer#%s, routing_key=%s' % (self._message_number,routing_key))
 
     # write (publish) to the channel 
-    # called by ioloop in a callback and includes
-    # a AmqpMessage() object
-    def basic_publish(self, amqp_message):
+    # __do_publish which is being called from the ioloop in a callback
+    # amqp_message = <class 'Message'>
+    def __do_basic_publish(self, amsg):
 
         self._message_number += 1
         self._deliveries.append(self._message_number)
-
+        
         self._channel.basic_publish(
-            amqp_message.exchange, 
-            amqp_message.routing_key, 
-            amqp_message.body, 
-            amqp_message.properties)
+            amsg.exchange, 
+            amsg.routing_key, 
+            amsg.body, 
+            amsg.properties)
 
-        self.logger.debug("published message to channel: exchange=%s, routing_key=%s, len(body)=%s" % (
-                amqp_message.exchange,
-                amqp_message.routing_key,
-                len(amqp_message.body)
-            ))
+#        self.logger.debug("published message to channel: exchange=%s, routing_key=%s, len(body)=%s" % (
+#                amqp_message.exchange,
+#                amqp_message.routing_key,
+#                len(amqp_message.body)
+#            ))
 
         # return the message number so we can pass back
         # as the delivery_tag
         return self._message_number
 
-    def do_publish(self, blocking_message=None):
+    # to be called from the ioloop in a callback
+    # a blocking publish is actually an asynchronous AMQP publish
+    # but the requesting thread is blocked waiting for a delivery
+    # confirmation
+    def __publish_callback(self, message=None):
         
         # is this legit?
         if not self._channel:
             self.logger.error('do_publish() returned as channel is not ready')
-            # if we are blocking, a thread is waiting for a response via
-            # the message_queue
             if blocking_message: self.blocking_publish_response.put("error")
             return
 
-        if blocking_message:
-            self.blocking_message_id = self.basic_publish(blocking_message)
-            # we will now fall out and requesting client blocks until response
-        else:    
-            while not self.message_queue.empty():
-                # this is blocking but should never be blocked long and
-                # then we directly write the message to the channel
-                out_message = self.message_queue.get()
-                self.basic_publish(out_message)
+        # If we are in a blocking response publish, we have the message passed
+        # to us for immediate use
+        if message:
+            # note the message number so we can associate the asynchronously 
+            # received delivery confirmation with this publish
+            self.blocking_message_id = self.__do_basic_publish(message)
+            # the sender thread is already blocked and waiting for a response
+            # we will drop which will also send any non-blocking messages
+
+        # we have been called from a thread-safe ioloop callback so we can
+        # iterate the outgoing message queue if we so choose
+        while not self.message_queue.empty():
+            # this is blocking but should never be blocked long and
+            # then we directly write the message to the channel
+            message = self.message_queue.get()
+            self.__do_basic_publish(message)
 
     # request to publish a message - almost certainly from another thread
-    def publish(self, exchange, routing_key, body, **kwargs):
-        
+    # exchange, routing_key, body, **kwargs
+    def publish(self, **kwargs):
         try:
             # publish a message to RabbitMQ
             # track message numbers to check against delivery confirmations in
@@ -199,33 +171,41 @@ class AsynchronousAmqpProducer(AsynchronousAmqpClient):
             # as we could reject this right here and right now
             if self._connection:
 
-                properties = kwargs.get("properties",False)
-                blocking = kwargs.get("blocking",False)
+                exchange = kwargs.get("exchange")
+                routing_key = kwargs.get("routing_key", None)
+                body = kwargs.get("body", None)
+                properties = kwargs.get("properties", None)
+                
+                blocking = kwargs.get("blocking", False)
 
-                msg = AmqpMessage()
-                msg.exchange = exchange
-                msg.routing_key = routing_key
-                msg.body = body
-                msg.properties = properties
+                # if we have been passed a <class 'Amqp.Message'>
+                if "message" in kwargs:
+                    message = kwargs.get("message")
+                else:
+                    message = Message(exchange=exchange,routing_key=routing_key,
+                        body=body,properties=properties)
+
+                # place message in outgoing Queue
+                # if we are trying to do a blocking mode, there could in fact be messages
+                # in the Queue already -- TODO
 
                 if blocking:
-                    # blocking mode so we can get a message ack back immediately
-                    # for 
+                    # blocking mode so we can get a message ack back immediately and
                     # pass message asynchronously to ioloop in the callback request
-                    cb = functools.partial(self.do_publish, msg)
+                    cb = functools.partial(self.__publish_callback, message)
                     self._connection.ioloop.add_callback_threadsafe(cb)
 
-                    # block and wait for response from message Queue
+                    # now block and wait for response from message Queue
                     return self.blocking_publish_response.get()
                 else:
                     # the message queue is only used for messages we wish to send
                     # asynchronously and is an outgoing queue
-                    self.message_queue.put(msg)
-                    self.logger.info('enqueued message # %i', self._message_number)
-                    self._connection.ioloop.add_callback_threadsafe(self.do_publish)
+                    self.message_queue.put(message)
+                    #self.logger.info('enqueued message # %i', self._message_number + 1)
+                    self._connection.ioloop.add_callback_threadsafe(self.__publish_callback)
                     # we are now going to exit as we are non-blocking and have 
-                    # enqueued a message and alrtered the ioloop there are messages 
+                    # enqueued a message and alrtered the ioloop there are messages
+                    
         except Exception as e:
             self.logger.error("producer::publish() %s" % e)
-            c5lib.print_tb()
             raise e

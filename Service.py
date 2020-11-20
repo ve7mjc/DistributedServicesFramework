@@ -22,7 +22,9 @@ import configparser
 
 import sys # argv[..], exit
 import os.path # file path checking
-import traceback
+
+import threading
+# import traceback
 
 # Service Monitor
 # integrated watchdog functionality?
@@ -36,25 +38,8 @@ class ServiceMonitor():
         
     def stop(self):
         pass
-
-# redef of Logging LogLevels for child applications
-class LogLevel():
-    CRITICAL = 50
-    FATAL = CRITICAL
-    ERROR = 40
-    WARNING = 30
-    WARN = WARNING
-    INFO = 20
-    DEBUG = 10
-    NOTSET = 0
-
-# convenience for tracebacks for debugging
-def print_tb():
-    print(tb())
-def tb():
-    return traceback.print_exc(file=sys.stdout)
-
-class Supervisor():
+        
+class Service(threading.Thread):
 
     _config_filename = None
     _config = None
@@ -65,6 +50,7 @@ class Supervisor():
         # process keyword arguments from class initializer
         _config_required = kwargs.get("config_required", False)
         self.app_name = kwargs.get("app_name", os.path.splitext(os.path.basename(sys.argv[0]))[0])
+        self._root_loglevel = kwargs.get("loglevel", logging.WARNING)
 
         # Commandline Arguments
         # application may access arguments via self.cli_args
@@ -135,7 +121,7 @@ class Supervisor():
         # We will take advantage of the events of root logger children 
         # propogating upward to the root logger
         # logging.getLogger() returns the root logger if no name specified
-        self.root_logger = logging.getLogger() 
+        self.root_logger = logging.getLogger()
         
         # some libraries have been observed adding a handler to the root logger before we do
         # here we are only creating one if there are not currently any
@@ -160,24 +146,44 @@ class Supervisor():
         file_handler.setFormatter(formatter)
         self.root_logger.addHandler(file_handler)
         
+        self.root_logger.setLevel(self._root_loglevel)
+        
         # Configure logger for this module
         self.logger = logging.getLogger(self.app_name + "." + type(self).__name__)
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(logging.WARNING)
         
         # now that logger is up we can report whether we are using a config file or not
         if self.config is None:
             self.logger.info("config file not found")
         
+        super().__init__()
+        
         self.service_monitor = ServiceMonitor()
         self.service_monitor.start()
-
-    # create, configure, and return a Logger for the application
-    def getLogger(self,name=None,level=logging.INFO):
-        logger_name = self.app_name
-        if name:
-            logger_name = "%s.%s" % (logger_name,name)          
+        
+        # __init__ fini
+        pass
+    
+    def set_loglevel(self, loglevel):
+        logging.getLogger().setLevel(loglevel)
+    
+    def loglevel_debug(self):
+        return logging.DEBUG
+    
+    def loglevel_warning(self):
+        return logging.WARNING
+        
+    def loglevel_info(self):
+        return logging.INFO
+    
+    # create, configure, and return a Logger for an application or module
+    def get_logger(self, module_name=None, **kwargs):
+        if not module_name: module_name = self.app_name
+        logger_name = module_name
+#            if name:
+#                logger_name = "%s.%s" % (logger_name,name)
         logger = logging.getLogger(logger_name)
-        logger.setLevel(level)
+        logger.setLevel(kwargs.get("level", logging.INFO))
         return logger
 
     def shutdown(self):
@@ -189,3 +195,4 @@ class Supervisor():
         pass
         # Warning regarding logging here - you may receive a NameError when calling 
         # logging.FileHandler.emit() late during the Python finalization
+
