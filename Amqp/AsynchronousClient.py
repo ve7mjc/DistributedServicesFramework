@@ -24,17 +24,26 @@ from pprint import pprint
 # which are thread-safe unless they register a thread-safe callback
 # with the ioloop itself
 
+#from DistributedServicesFramework.Statistics import Statistics
+from DistributedServicesFramework.Component import Component
+
 class ClientType(Enum):
     Unspecified = 0,
     Producer = 1,
     Consumer = 2
 
-# Connection Progress
-# Establish connection
-# Open channel
-# 
-
-class AsynchronousClient(Thread):
+#
+# Client Ready Process:
+# Configure and Establish TCP connection with on_open_error_callback,
+#   on_open_callback, and on_close_callback
+# Configure and Open Channel with on_open_callback
+#   call channel.add_on_close_callback(..) for on_close callback
+# Create Exchange(s) [optional] with callback
+# Create Queue(s) [optional] with callback
+# Configure Exchange-Queue Bindings [optional] with callback
+# Unbind unused Exchange-Queue Bindings [optional] with callback
+# Notify sub-classes (Producer or Consumer) client is ready via ::client_ready()
+class AsynchronousClient(Component,Thread):
 
     # Connection related
     _connection = None
@@ -72,10 +81,10 @@ class AsynchronousClient(Thread):
         # process keyword arguments
         loglevel = kwargs.get("loglevel", logging.INFO)
         loglevel = kwargs.get("level", loglevel) # alternate key name
+        statistics = kwargs.get("statistics", None)
         self._amqp_url = kwargs.get("url", self._amqp_url)
         self._host = kwargs.get("host", None)
         self._amqp_application_name = kwargs.get("amqp_app_name", None)
-#        self.logger = kwargs.get("logger", None)
         self._module_name = kwargs.get("module_name", None)
         self._connection_parameters = kwargs.get("connection_parameters", None)
         
@@ -100,8 +109,13 @@ class AsynchronousClient(Thread):
         # dynamic creation of queue bindings cache file
         self._bindings_cache_filename = "%s-bindings.cache" % self._module_name.lower()
 
-        # threading.Thread constructor
-        super().__init__()
+        # now via Component
+        #__statistics = Statistics(parent=statistics_parent)
+
+        # Call Constructors
+        Component.__init__(self, statistics=statistics)
+        Thread.__init__(self)
+        
     
     # convenience method to add a routing_key pattern
     # to the class instance list of bindings
@@ -136,7 +150,7 @@ class AsynchronousClient(Thread):
             parameters = pika.ConnectionParameters("localhost", 5672, '/')
         
         # todo - add connection parameters to this log entry
-        self.logger.info("Connecting to AMQP Broker")
+        self.logger.debug("Connecting to AMQP Broker")
             
         connection = pika.SelectConnection(parameters=parameters,
                 on_open_callback=self.on_connection_open,

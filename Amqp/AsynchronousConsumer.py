@@ -10,9 +10,9 @@ from datetime import datetime
 #import logging
 #import time
 
-import DistributedServicesFramework as DSF
+from DistributedServicesFramework import Utilities, ExceptionHandling
 from DistributedServicesFramework.Amqp.AsynchronousClient import AsynchronousClient, ClientType
-from Amqp.Message import Message
+from DistributedServicesFramework.Amqp.AmqpMessage import AmqpMessage
 
 # TAKE NOTE
 # self._connection.ioloop.start() runs in Thread::run()
@@ -30,6 +30,10 @@ from Amqp.Message import Message
 # receiving messages
 # Either re-implement on_message()
 # or pass a Queue in
+
+# Test Modes
+# amqp_nack_requeue_all_messages
+# 
 
 class AsynchronousConsumer(AsynchronousClient):
 
@@ -171,7 +175,7 @@ class AsynchronousConsumer(AsynchronousClient):
 
         try:
             # prepare message for flight
-            message = Message(pika_tuple=(basic_deliver, properties, body))
+            message = AmqpMessage(pika_tuple=(basic_deliver, properties, body))
             
             # pass to abstract method
             # check if a child class has this method present
@@ -189,7 +193,7 @@ class AsynchronousConsumer(AsynchronousClient):
                 return
 
         except Exception as e:
-            self.logger.error(DSF.get_traceback_string())
+            self.logger.error(ExceptionHandling.traceback_string(e))
 
     # Calls channel
     # Send Basic.Ack RPC to the channel to acknowledge message delivery
@@ -199,10 +203,11 @@ class AsynchronousConsumer(AsynchronousClient):
     # from confirming delivery of messages that may have been from a 
     # different consumer session
     def ack_message(self, delivery_tag, multiple=False, consumer_tag=None):
-        # this functionality is added for testing and development purposes
-        if hasattr(self,"_ack_disabled_max_preflight") and self._ack_disabled_max_preflight: 
-            self.logger.info("ack was requested for delivery_tag=%s but we are set to _ack_disabled=True" % delivery_tag)
-            return # log and return
+        
+        if self.test_mode("amqp_nack_requeue_all_messages"):
+            self.logger.info("ack was requested for delivery_tag=%s but test_mode(amqp_nack_requeue_all_messages) is enabled" % delivery_tag)
+            self.nack_message(delivery_tag, consumer_tag=consumer_tag, multiple=False, requeue=True)
+            return
             
         if consumer_tag and consumer_tag != self._consumer_tag:
             self.logger.warning("ack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))

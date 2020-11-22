@@ -19,38 +19,48 @@
 import logging
 import argparse
 import configparser
+import signal
 
 import sys # argv[..], exit
 import os.path # file path checking
 
-import threading
-# import traceback
+from DistributedServicesFramework.ServiceMonitor import ServiceMonitor
+from DistributedServicesFramework.Statistics import Statistics
+from DistributedServicesFramework.Component import Component
 
-# Service Monitor
-# integrated watchdog functionality?
-class ServiceMonitor():
-    
-    def __init__(self):
-        pass
-    
-    def start(self):
-        pass
-        
-    def stop(self):
-        pass
-        
-class Service(threading.Thread):
+from threading import Thread
+import time
+
+class Service(Component,Thread):
 
     _config_filename = None
     _config = None
     _config_required = False
+    
+    # the run method (work loop) checks this flag repeatedly
+    # and will stop work and exit the loop on true
+    _shutdown_requested = False
+    
+    # do this before subclass initialization? as we have
+    # no control over when super().init is calleed
+    __statistics = Statistics()
 
     def __init__(self, **kwargs):
         
+        # Set the handler for signal signalnum to the function handler
+        # will be called with 2 arguments - signal.SIG_IGN or signal.SIG_DFL. 
+        signal.signal(signal.SIGINT, self.signal_handler)
+                
         # process keyword arguments from class initializer
         _config_required = kwargs.get("config_required", False)
         self.app_name = kwargs.get("app_name", os.path.splitext(os.path.basename(sys.argv[0]))[0])
         self._root_loglevel = kwargs.get("loglevel", logging.WARNING)
+
+        # Thread::name - A thread has a name. The name can be passed to the 
+        # constructor, and read or changed through the name attribute.
+        # A string used for identification purposes only. It has no semantics. 
+        # Multiple threads may be given the same name. 
+        # The initial name is set by the constructor.
 
         # Commandline Arguments
         # application may access arguments via self.cli_args
@@ -150,20 +160,47 @@ class Service(threading.Thread):
         
         # Configure logger for this module
         self.logger = logging.getLogger(self.app_name + "." + type(self).__name__)
-        self.logger.setLevel(logging.WARNING)
+        self.logger.setLevel(self._root_loglevel)
         
         # now that logger is up we can report whether we are using a config file or not
         if self.config is None:
-            self.logger.info("config file not found")
+            self.logger.debug("config file not being used; not required")
         
-        super().__init__()
+        #print(super())
+        Component.__init__(self)
+        Thread.__init__(self, target=self.__run_handler, name="%s.Service" % self.app_name)
+        # super().__init__() # Component, Thread
         
-        self.service_monitor = ServiceMonitor()
-        self.service_monitor.start()
+        # pass reference to Statistics() instance
+        self.__service_monitor = ServiceMonitor(statistics=self.__statistics)
+        self.__service_monitor.start()
         
         # __init__ fini
         pass
+
+    def __run_handler(self):
+        # prework
+        
+        self.logger.info("I am called before self.run()!")
+        
+        if hasattr(self, "run"):
+            self.run()
+        
+        self.logger.info("service shut down properly.")
+        # post work
+        
+    #def start(self):
+        
+        # target is the callable object to be invoked by the run() method. Defaults to None, meaning nothing is called.
     
+    # Signal handler to catch and handle signals
+    def signal_handler(self, signum, frame):
+        if hasattr(self,"__sigint_caught"):
+            self.logger.warning("caught an additional SIGINT")
+        else:
+            self.__sigint_caught = True
+            self.stop("Caught SIGINT")
+
     def set_loglevel(self, loglevel):
         logging.getLogger().setLevel(loglevel)
     
@@ -186,9 +223,16 @@ class Service(threading.Thread):
         logger.setLevel(kwargs.get("level", logging.INFO))
         return logger
 
-    def shutdown(self):
-        self.service_monitor.stop()
-        self.logger.debug("starting clean shutdown")
+    # wait on this process to finish work but respond to system exits
+    # provided as option make control logic more convenient in a __main__ block
+    # idiot! you forgot to put this in a while forever loop haha
+    def wait_forever(self):
+        try:
+            while True:
+                time.sleep(1)
+        except (KeyboardInterrupt, SystemExit):
+            print("caught KeyboardInterrupt in wait_forever")
+            self.stop("keyboard interrupt!")
 
     # Deleting (Calling destructor)
     def __del__(self, reason = None):
@@ -196,3 +240,35 @@ class Service(threading.Thread):
         # Warning regarding logging here - you may receive a NameError when calling 
         # logging.FileHandler.emit() late during the Python finalization
 
+    # convenience method to reverse logic and make flow logic more clear
+    # Returns true if a shutdown has not been requested
+    def keep_working(self):
+        if self._shutdown_requested: return False
+        else: return True
+
+    # Thread() has no official stop or shutdown method - the thread finishes
+    # when the Thread::run() method returns and thus we must implement our own
+    # control logic
+    def stop(self, reason=None):
+        shutdown_message = "Shutdown requested"
+        if reason: shutdown_message = "%s; Reason = %s" % (shutdown_message,reason)
+        self.logger.debug(shutdown_message)
+        self._shutdown_requested = True
+        self.__service_monitor.stop()
+    
+    # Thread::is_alive() - Return whether the thread is alive.
+    # This method returns True just before the run() method starts until just 
+    # after the run() method terminates. The module function enumerate() 
+    # returns a list of all alive threads.
+    
+    # Thread::join([(float)timeout]) - Wait until the thread terminates. 
+    # This blocks the calling thread until the thread whose join() method is 
+    # called terminates – either normally or through an unhandled exception – 
+    # or until the optional timeout occurs.
+    # - When the timeout argument is present and not None, it should be a 
+    # floating point number specifying a timeout for the operation in seconds 
+    # (or fractions thereof). As join() always returns None, you must call 
+    # isAlive() after join() to decide whether a timeout happened – if the 
+    # thread is still alive, the join() call timed out.
+    # - When the timeout argument is not present or None, the operation will 
+    # block until the thread terminates.

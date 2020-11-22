@@ -8,7 +8,7 @@ from queue import Queue
 from pika import BasicProperties
 
 from Amqp.AsynchronousClient import AsynchronousClient, ClientType
-from Amqp.Message import Message
+from Amqp import AmqpMessage
 
 # TAKE NOTE
 # self._connection.ioloop.start() runs in Thread::run()
@@ -182,7 +182,7 @@ class AsynchronousProducer(AsynchronousClient):
                 if "message" in kwargs:
                     message = kwargs.get("message")
                 else:
-                    message = Message(exchange=exchange,routing_key=routing_key,
+                    message = AmqpMessage(exchange=exchange,routing_key=routing_key,
                         body=body,properties=properties)
 
                 # place message in outgoing Queue

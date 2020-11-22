@@ -4,7 +4,7 @@ import pika.spec
 #import Basic.Deliver
 from pika.spec import BasicProperties, Basic
 
-class Message():
+class AmqpMessage():
     
     __exchange = None
     __routing_key = None
