@@ -1,18 +1,14 @@
 # Asynchronous, Threaded AMQP Consumer
 # Matthew Currie - Nov 2020
 
-import pika
+from pika.exceptions import ChannelWrongStateError
 
-#import threading
-import functools
+import functools # callbacks
 from datetime import datetime
-#import json # for disk-based queue binding cache
-#import logging
-#import time
 
-from DistributedServicesFramework import Utilities, ExceptionHandling
-from DistributedServicesFramework.Amqp.AsynchronousClient import AsynchronousClient, ClientType
-from DistributedServicesFramework.Amqp.AmqpMessage import AmqpMessage
+from distributedservicesframework import utilities, exceptionhandling
+from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient, ClientType
+from distributedservicesframework.amqp.amqpmessage import AmqpMessage
 
 # TAKE NOTE
 # self._connection.ioloop.start() runs in Thread::run()
@@ -95,7 +91,7 @@ class AsynchronousConsumer(AsynchronousClient):
         else: self.start_consuming()
         
     def consumer_ready(self):
-        self.logger.info("consumer ready")
+        self.logger.info("AMQP Consumer is ready.")
 
     # called prior to connection
     def prepare_connection(self):
@@ -193,7 +189,7 @@ class AsynchronousConsumer(AsynchronousClient):
                 return
 
         except Exception as e:
-            self.logger.error(ExceptionHandling.traceback_string(e))
+            self.logger.error(exceptionhandling.traceback_string(e))
 
     # Calls channel
     # Send Basic.Ack RPC to the channel to acknowledge message delivery
@@ -215,7 +211,7 @@ class AsynchronousConsumer(AsynchronousClient):
             try:
                 cb = functools.partial(self.__do_ack_message, delivery_tag, multiple)
                 self._connection.ioloop.add_callback_threadsafe(cb)
-            except pika.exceptions.ChannelWrongStateError:
+            except ChannelWrongStateError:
                 # this was moved from a method which was calling the self._channel directly
                 # we not hot hit this exception any more
                 self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
@@ -225,7 +221,7 @@ class AsynchronousConsumer(AsynchronousClient):
         try:
             self._channel.basic_ack(delivery_tag, multiple)
             self.logger.debug("requesting ioloop write an ack for %s to the channel" % delivery_tag)           
-        except pika.exceptions.ChannelWrongStateError:
+        except ChannelWrongStateError:
             self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
 
     # Send NACK for Message - Thread-Safe IOLoop Callback

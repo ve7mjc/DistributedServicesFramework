@@ -1,21 +1,12 @@
 # Distributed Services Framework - Python Edition!
 
-# add this module path to the search path so we can access modules and members
-import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__)))
+from sys import version_info
+assert version_info >= (3,4)
 
-# Bring these Classes into scope only
-from DistributedServicesFramework.Service import Service
-from DistributedServicesFramework import Exceptions
-import DistributedServicesFramework.Amqp
-
-# redef of Logging LogLevels for child applications
-class LogLevel():
-    CRITICAL = 50
-    FATAL = CRITICAL
-    ERROR = 40
-    WARNING = 30
-    WARN = WARNING
-    INFO = 20
-    DEBUG = 10
-    NOTSET = 0
+# Bring Classes into scope of this package
+from distributedservicesframework.service import Service
+from distributedservicesframework.component import Component
+from distributedservicesframework.servicemonitor import ServiceMonitor
+from distributedservicesframework.statistics import Statistics
+from distributedservicesframework.messageprocessingpipeline import MessageProcessingPipeline
+from distributedservicesframework.messageprocessor import MessageProcessor

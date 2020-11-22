@@ -7,8 +7,8 @@ import functools # callbacks
 from queue import Queue
 from pika import BasicProperties
 
-from Amqp.AsynchronousClient import AsynchronousClient, ClientType
-from Amqp import AmqpMessage
+from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient, ClientType
+from distributedservicesframework.amqp.amqpmessage import AmqpMessage
 
 # TAKE NOTE
 # self._connection.ioloop.start() runs in Thread::run()
@@ -40,7 +40,7 @@ class AsynchronousProducer(AsynchronousClient):
     # Exchanges, Queues, and Bindings are declared
     def client_ready(self):     
         self.enable_delivery_confirmations()
-        self.logger.info("producer is ready")
+        self.logger.info("AMQP Producer is ready.")
 
         self.__publish_callback() # there may be messages waiting in the queue already
 

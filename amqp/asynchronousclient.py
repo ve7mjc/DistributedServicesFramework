@@ -24,8 +24,8 @@ from pprint import pprint
 # which are thread-safe unless they register a thread-safe callback
 # with the ioloop itself
 
-#from DistributedServicesFramework.Statistics import Statistics
-from DistributedServicesFramework.Component import Component
+#from distributedservicesframework.statistics import Statistics
+from distributedservicesframework.component import Component
 
 class ClientType(Enum):
     Unspecified = 0,
@@ -79,38 +79,32 @@ class AsynchronousClient(Component,Thread):
         self._client_type = client_type
 
         # process keyword arguments
-        loglevel = kwargs.get("loglevel", logging.INFO)
+        loglevel = kwargs.get("loglevel", logging.NOTSET)
         loglevel = kwargs.get("level", loglevel) # alternate key name
+        
         statistics = kwargs.get("statistics", None)
         self._amqp_url = kwargs.get("url", self._amqp_url)
         self._host = kwargs.get("host", None)
         self._amqp_application_name = kwargs.get("amqp_app_name", None)
-        self._module_name = kwargs.get("module_name", None)
+        self._name = kwargs.get("name", None)
         self._connection_parameters = kwargs.get("connection_parameters", None)
         
         # module name for the purpose of logging and disk writes
-        if not self._module_name:
+        if not self._name:
             if client_type == ClientType.Producer:
-                self._module_name = "AMQP-Producer"
+                self._name = "amqpclient.producer"
             elif client_type == ClientType.Consumer:
-                self._module_name = "AMQP-Consumer"
+                self._name = "amqpclient.consumer"
             else:
-                self._module_name = "AMQP-Client"
+                self._name = "amqpclient"
         
-        # configure logging
-        self.logger = logging.getLogger(self._module_name)
-        self.logger.setLevel(loglevel)
-
         # consumer specific?
 #        self.was_consuming = False
 #        self._consumer_tag = None
 #        self._consuming = False
         
         # dynamic creation of queue bindings cache file
-        self._bindings_cache_filename = "%s-bindings.cache" % self._module_name.lower()
-
-        # now via Component
-        #__statistics = Statistics(parent=statistics_parent)
+        self._bindings_cache_filename = "%s-bindings.cache" % self._name.lower()
 
         # Call Constructors
         Component.__init__(self, statistics=statistics)
@@ -476,7 +470,7 @@ class AsynchronousClient(Component,Thread):
 
     # this method is called by the thread worker after calling the start()
     # of this instance class
-    def run(self):        
+    def do_run(self):
         
         self._connection = None
         
@@ -534,4 +528,6 @@ class AsynchronousClient(Component,Thread):
         # us to stop the ioloop from another thread. No methods are
         # are thread-safe to interact with the ioloop!
         self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
+        
+        super().stop()
         

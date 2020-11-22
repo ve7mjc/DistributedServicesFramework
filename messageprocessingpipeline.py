@@ -1,5 +1,7 @@
+# Data Processing Pipeline
+# AMQP Consumer(s) -> Processors -> AMQP Publisher(s)
 #
-# Data Adapter / Data Processing Pipeline
+# Future - add other Reader and Writer classes to increase adapter flexibility 
 #
 # Design Objectives:
 # - Data integrity assurance from input to output (no data loss)
@@ -23,29 +25,47 @@
 # Producer (upstream) Publish Message Delivery Ack event
 # to a 
 # Consumer (Source) Consumer Channel Message Ack
-
-# The Distributed Services Framework and the accompanied libraries were 
-# developed for this project
-from DistributedServicesFramework import ExceptionHandling
-from DistributedServicesFramework.Service import Service
-from DistributedServicesFramework.Amqp.AsynchronousConsumer import AsynchronousConsumer
-from DistributedServicesFramework.Amqp.AsynchronousProducer import AsynchronousProducer
-from DistributedServicesFramework.Amqp import AmqpUtilities
-from DistributedServicesFramework.Amqp.AmqpMessage import AmqpMessage
-
-from DistributedServicesFramework.Exceptions import *
+# The Distributed Services Framework was developed specially for this project
+from distributedservicesframework import exceptionhandling
+from distributedservicesframework.service import Service
+from distributedservicesframework.amqp.asynchronousconsumer import AsynchronousConsumer
+from distributedservicesframework.amqp.asynchronousproducer import AsynchronousProducer
+from distributedservicesframework.amqp import amqputilities
+from distributedservicesframework.amqp.amqpmessage import AmqpMessage
+from distributedservicesframework.exceptions import *
 
 from queue import Queue, Empty
 import time # for sleep and sleep only, zzz
+#
+# Notes on extending this class:
+#
+#  - Call this constructor if __init__ redeclared, you may pass
+#    keyword arguments which will be passed upwards. Naming convention makes
+#    an effort to place the destination component in the beginning. eg.
+#  - Reimplement (Optional):
+#    def __init__(self): be sure to call super().__init__() and keyword
+#     arguments may be passed in which are passed up the chain. Examples:
+#     - amqp_publish_exchange
+#     - amqp_input_message_routing_key_prefix
+#    def pre_process_message(self, msc_amqp_message, message_type=None):
+#      if you wish to pre-process messages before passing them to message 
+#      type specific processors
+#  - Methods:
+#    self.add_message_type("{friendly_name}", bind_key="{amqp bind pattern}", 
+#       processor={reference to callable message processor method})
+#    add_amqp_consumer(**kwargs)
+#    add_amqp_producer(**kwargs)
+#    <more> see below
+#
 
-# must be asyncronous and thread-safe
+# Stay asyncronous; Stay thread-safe!
 class MessageProcessingPipeline(Service):
     
-    # <class 'Amqp.AsynchronousConsumer'>
+    # <class 'amqp.asynchronousconsumer'>
     _amqp_consumers = []
     _min_amqp_consumers_required = 1
     
-    # <class 'Amqp.AsynchronousProducer'>
+    # <class 'amqp.asynchronousproducer'>
     _amqp_producers = []
     _min_amqp_producers_required = 1
     
@@ -63,22 +83,21 @@ class MessageProcessingPipeline(Service):
     #_publish_queue = None
     
     # Registered message types for assigning appropriate processors
-    __amqp_input_message_routing_key_prefix = None
     __message_types = {}
     
     def __init__(self, **kwargs):
         
         self._amqp_publish_exchange = kwargs.get("amqp_publish_exchange", None)
-        self.__amqp_input_message_routing_key_prefix = kwargs.get("amqp_input_message_routing_key_prefix", None)
-        #self._publish_queue = kwargs.get("queue", None)
-        kwargs["loglevel"] = self.loglevel_debug()
+        self._amqp_input_message_routing_key_prefix = kwargs.get("amqp_input_message_routing_key_prefix", None)
+        self._amqp_publish_queue = kwargs.get("queue", None)
+        #kwargs["loglevel"] = self.loglevel_info()
         
         # get loggers, etc
         super().__init__(**kwargs)
         
-        self.logger.info("started")
+        self.logger.info("Configured Pipeline")
 
-    # Create an instance of 'Amqp.AsynchronousConsumer' passing in
+    # Create an instance of 'amqp.asynchronousconsumer' passing in
     #  - keyword arguments
     #  - reference to our local message Queue
     def add_amqp_consumer(self, **kwargs):
@@ -87,7 +106,7 @@ class MessageProcessingPipeline(Service):
         consumer = AsynchronousConsumer(**kwargs)
         self._amqp_consumers.append(consumer)
 
-    # Create an instance of 'Amqp.AsynchronousProducer' passing in
+    # Create an instance of 'amqp.asynchronousproducer' passing in
     # - keyword arguments
     # - "exchange" if supplied to this class instance
     def add_amqp_producer(self, **kwargs):
@@ -133,7 +152,7 @@ class MessageProcessingPipeline(Service):
 
         for producer in self._amqp_producers:
             producer.stop()
-                
+        
         for consumer in self._amqp_consumers:
             consumer.stop()
 
@@ -155,23 +174,21 @@ class MessageProcessingPipeline(Service):
     def add_message_type(self, message_type, **kwargs):
         self.__message_types[message_type] = {}
         for key in kwargs.keys():
-            self.logger.debug("Adding self.__message_types['%s']['%s'] = %s" % (message_type, key, kwargs[key]))
+            self.logger.debug("adding message_type['%s']['%s'] = %s" % (message_type, key, kwargs[key]))
             self.__message_types[message_type][key] = kwargs[key]
             
     @property
     def amqp_input_message_routing_key_prefix(self):
-        return self.__amqp_input_message_routing_key_prefix
+        return self._amqp_input_message_routing_key_prefix
             
-    # Get message_type from routing_key
+    # Get message_type for supplied routing_key or None if no match
     # match provided Message routing_key against list of known product 
     # binding_patterns and return the type if matched or None if no match
     def routing_key_message_type(self, routing_key):
-        routing_key = AmqpUtilities.remove_routing_key_prefix(routing_key, self.__amqp_input_message_routing_key_prefix)
-        self.logger.debug("searching len(self.__message_types)=%s for routing_key=%s" % (len(self.__message_types), routing_key))
+        routing_key = amqputilities.remove_routing_key_prefix(routing_key, self.amqp_input_message_routing_key_prefix)
         for message_type in self.__message_types:
             if "bind_key" in self.__message_types[message_type]:
-                if AmqpUtilities.match_routing_key(routing_key, self.__message_types[message_type]['bind_key']):
-                    self.logger.debug("returning %s for key %s" % (message_type,routing_key))
+                if amqputilities.match_routing_key(routing_key, self.__message_types[message_type]['bind_key']):
                     return message_type
         return None # if nothing found
 
@@ -179,15 +196,22 @@ class MessageProcessingPipeline(Service):
     # however a known message_type may not have a processor
     def _message_type_processor(self, message_type):
         if "processor" in self.__message_types[message_type]:
-            return self.__message_types[message_type]["processor"]
+            if hasattr(self.__message_types[message_type]["processor"], "process"):
+                return self.__message_types[message_type]["processor"].process
+            else: return self.__message_types[message_type]["processor"]
         
     # Return True if we have a callable method specified in the configuration
     # for the supplied message_type
-    # type(process_method) == <class 'method'>
+    # type(process_reference.process) == <class 'method'>
+    # prefer processor is a reference to a class which has a process() method
+    # but default to processor being a callable method
     def message_type_has_processor(self, message_type):
         if message_type == None: return False
         if "processor" in self.__message_types[message_type]:
-            return callable(self.__message_types[message_type]["processor"])
+            if hasattr(self.__message_types[message_type]["processor"], "process"):
+                return callable(self.__message_types[message_type]["processor"].process)
+            else:
+                return callable(self.__message_types[message_type]["processor"])
         return False
     
     # redeclare me in child classes!
@@ -201,19 +225,20 @@ class MessageProcessingPipeline(Service):
             try: # dont assume this subclass method will behave
                 return self.pre_process_message(input_message, message_type)
             except Exception as e:
-                self.logger.error("message processing failed in pre-processing: %s" % ExceptionHandling.traceback_string(e))
+                self.logger.error("message processing failed in pre-processing: %s" % exceptionhandling.traceback_string(e))
 
     # No reaction to the processing success or Exceptions are performed in
     # this method. We signal the outcome by passing the output data from the
     # processor or raise an Exception that reflects the nature of the problem
     def _process_message(self, message, message_type):
         
-        # routing_key based processing as no other method is written yet
+        # routing_key -> message_type based processing only as no other 
+        # method has been written into this class
 
         # Check if we have a suitable processor available for this data type
         # before proceeding
         if not self.message_type_has_processor(message_type):
-            raise MessageTypeUnsupportedError() # ("message type %s is unsupported" % message_type)
+            raise MessageTypeUnsupportedError("known but unsupported Message type; message_type=%s, routing_key=%s" % (message_type, message.routing_key))
 
         # Message Pre-processing
         # Generally processing of a message which may be common to all message types
@@ -240,18 +265,25 @@ class MessageProcessingPipeline(Service):
     # process message against subclass methods, and
     # push result to output message queue
     def _do_message_processing(self):
-        try:
-            # retrieve a message of type AmqpMessage from input queue
+        try: # except queue.Empty, 
             input_message = self._input_message_queue.get(block=True, timeout=0.01)
             
-            # Make record of consumer and delivery tags so we can act on the
-            # outcome of the processing of this message
+            # Note consumer and delivery tags so we follow up with message
+            # acknowledgements to the source AMQP Consumer. We are making an 
+            # assumption here that we are working with a valid AMQP message
             input_message_routing_key = input_message.routing_key
             input_message_consumer_tag = input_message.basic_deliver.consumer_tag
             input_message_delivery_tag = input_message.basic_deliver.delivery_tag
             input_message_type = self.routing_key_message_type(input_message_routing_key)
     
+            # We expect to throw Exceptions on any reason why we are unable to 
+            # process this messsage.
             try:
+                # Reject now if the input_message_type is unknown as we do not 
+                # have knowledge of the type nor a matching processor
+                if not input_message_type:
+                    raise MessageTypeUnsupportedError("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
+                
                 # Process Message and perform follow-on actions
                 processor_output = self._process_message(input_message, input_message_type)
 
@@ -278,7 +310,7 @@ class MessageProcessingPipeline(Service):
                 self.statistics.metric("messages_processed_type_%s_completely" % input_message_type)
                 
             except MessageTypeUnsupportedError as e:
-                self.logger.info("Unsupported message type: %s" % e)
+                self.logger.info(e)
                 self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
                 self.statistics.metric("messages_processed_unknown_type")
                 
@@ -289,26 +321,23 @@ class MessageProcessingPipeline(Service):
                 
             except Exception as e:
                 # what Message Acknowledgement shall we perform?
-                self.logger.error(ExceptionHandling.traceback_string(e))
+                self.logger.error(exceptionhandling.traceback_string(e))
 
             # all paths lead here except unhandled exceptions!
 
         except Empty:
             pass # there was no messages for us, back to waiting we go
         except Exception as e:
-            self.logger.error(ExceptionHandling.traceback_string(e))
+            self.logger.error("unexpected error in message processing loop: %s" % exceptionhandling.traceback_string(e))
             
         # this round of work has completed
         return 
 
-    # Thread::run() - Method representing the thread’s activity
-    # The standard run() method invokes the callable object passed to the 
-    # object’s constructor as the target argument, if any, with sequential and 
-    # keyword arguments taken from the args and kwargs arguments, respectively.
-    # Thread::start() - Start the thread’s activity.
-    # It must be called at most once per thread object. It arranges for the 
-    # object’s run() method to be invoked in a separate thread of control.
-    def run(self):
+    # Service::do_run()
+    # Called via Thread::run() and when we complete, parent will cleanup
+    def do_run(self):
+
+        self.logger.info("Starting Pipeline")
 
         # Start AMQP Producers and Consumers 
         # at least one of each is required or flag for shutdown if not able
@@ -319,20 +348,26 @@ class MessageProcessingPipeline(Service):
         else: 
             self.stop("Not able to start minimum required %s AMQP Producers(s)" % self._min_amqp_producers_required)
         
+        # set up service monitor and watchdogs
+        try:
+            self.service_monitor.add_statistics_metric_watchdog("messages_processed_total_completely", 120)
+        except Exception as e:
+            self.logger.error("%s" % exceptionhandling.traceback_string(e))
+        
         # single threaded processor - this could be multithreaded
         # we could call a child or parent class method work loop here also
         
         # The work loop
         # will not execute and pass by if required message input and output
         # mechanisms are not in place
-        while self.keep_working():
+        while self.keep_working:
                 self._do_message_processing()
         
         # clean up before we shut down
         self.stop_amqp_clients()
         self.block_until_amqp_clients_finish()   
 
-        self.logger.debug("leaving MessageProcessingPipeline::run() ..")
+        self.logger.info("Shutting down pipeline")
         # released to exit
         return
     

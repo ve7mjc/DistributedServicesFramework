@@ -5,11 +5,11 @@ from sys import stdout, exc_info
 from traceback import format_exc
 from inspect import stack
 
-#class ExceptionHandling:
+#class exceptionhandling:
 
-import Exceptions # ?
+# import exceptions # ?
 
-# class ExceptionHandling
+# class exceptionhandling
 
 # return Traceback "oneliner" for logging and other compact uses
 # Format: in {filename}:{line_no}; {exception_type} - {exception_message}

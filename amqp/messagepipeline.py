@@ -3,8 +3,8 @@
 # to a 
 # Consumer (Source) Consumer Channel Message Ack
 
-from DistributedServicesFramework.Amqp.AsynchronousConsumer import AsynchronousConsumer
-from DistributedServicesFramework.Amqp.AsynchronousProducer import AsynchronousProducer
+from distributedservicesframework.amqp.asynchronousconsumer import AsynchronousConsumer
+from distributedservicesframework.amqp.asynchronousproducer import AsynchronousProducer
 
 from queue import Queue
 
