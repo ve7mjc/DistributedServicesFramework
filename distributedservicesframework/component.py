@@ -23,7 +23,7 @@ from distributedservicesframework.statistics import Statistics
 from datetime import datetime
 import logging
 
-# Multiple Inheritance Tips
+# Multiple Inheritance Notes
 # class FooBar(Foo, Bar):
 #  super will call base classes from right to left
 #  super().__init__() - this calls all constructors up to Foo (aka all)
@@ -48,11 +48,13 @@ class Component():
     # Statistics instance
     _statistics = None
     
-    # This variable and the companion inverted getter property (self.keep_working) 
-    # and the setter method stop() may be used to control whether a work loop such 
-    # as threading.Thread::run method (thread worker) may continue working.
+    # This variable works with the inverted getter property (self.keep_working) 
+    # and the setter method stop() to control whether a work loop such as 
+    # threading.Thread::run method (thread worker) may continue working.
     # TODO: Mutex Lock
     _stop_requested = False
+    
+    _loglevel = None
     
     def __init__(self,**kwargs):
         
@@ -66,19 +68,57 @@ class Component():
         # deprecated. phase out _module_name in favor of __name
         if hasattr(self,"_module_name"):
             self._name = self._module_name
-        
+
+        if "loglevel" in kwargs: self._loglevel = kwargs.get("loglevel")
+
         # Logger - Do not override logging it if has been configured
         # prior to this constructor
         if not hasattr(self, "_logger"):
-            logger_name = kwargs.get("logger_name", self.name).lower()
-            self._logger = logging.getLogger(logger_name)
-            self.logger.setLevel(logging.NOTSET)
             
-        self._statistics = Statistics(component_name=self._name)
+            # Just the logger name - it is important
+            if "logger_name" in kwargs:
+                self._logger_name = kwargs.get("logger_name")
+            elif hasattr(self,"_logger_name") and self._logger_name is not None:
+                pass # happy, we are.
+            elif hasattr(self,"_name") and self._name is not None:
+                self._logger_name = self._name
+            else:
+                self._logger_name = type(self).__name__.lower()
+            # logger_name = kwargs.get("logger_name", self.name).lower()
+            
+            self._logger = logging.getLogger(self._logger_name)
+            if not self._loglevel: self._loglevel = logging.WARNING
+            self.logger.setLevel(self._loglevel)
+        
+        # create a class instance if one does not exist
+        if not self._statistics:
+            self._statistics = Statistics(component_name=self.name)
             
     @property
-    def name(self):
-        return self._name
+    def name(self): return self._name
+
+    # When this component is ready to perform its intended 
+    # purpose - eg. it has connected to a remote service, authenticated, 
+    # configured itself and may be awaiting further comands 
+    def is_ready(self): return self._ready
+    _ready = False
+
+    # An unrecoverable condition is present which prevents 
+    # this component from being able to fulfil its intended function
+    def is_failed(self): return self._failed
+    _failed = False
+    
+    @property
+    def failed_reason(self):
+        return self._failed_reason
+    _failed_reason = None
+    
+    # Called when we have detected a critical and unrecoverable fault
+    # Optional reason which can be retrieved
+    def set_failed(self, failure_reason=None):
+        self.failed = True
+        self._failed_reason = failure_reason
+        self.stop("failure: %s" % failure_reason)
         
     @property
     def logger(self):
@@ -102,16 +142,19 @@ class Component():
     # Thread::run() methods do_run() instead to remain consistent
     # Namely for AMQP AsynchronousClienst
     def run(self):
-        if hasattr(self,"do_run"): self.do_run()
-    
-    # set logging of any logger based on dot notated taxonomy
-    # eg. "root.AMQP-Consumer" -> DEBUG
-    def set_logger_loglevel(self, logger_name, level_string):
-        logging.getLogger(logger_name).setLevel(level_string.upper())
-    
-    # set the logging level of this components logger
-    def set_loglevel(self, level_string):
-        self.logger.setLevel(level_string.upper())
+        if hasattr(self,"do_run"): 
+            try: self.do_run()
+            except Exception as e:
+                self.logger.error("error in do_run method! %s" % e)
+                raise Exception(e)
+
+    # set the logging level of a logger by name or if only one argument
+    # supplied, apply to this instance logger!
+    def set_loglevel(self, param1, param2=None):
+        if not param2: 
+            self.logger.setLevel(param1.upper())
+        else:
+            logging.getLogger(param1).setLevel(param2.upper())
 
     ### TEST MODE METHODS
     # examples
@@ -142,17 +185,15 @@ class Component():
     # convenience method to reverse logic and make flow logic more clear
     # Returns true if a shutdown has not been requested
     @property
-    def keep_working(self):
-        if self._stop_requested: return False
-        else: return True
+    def keep_working(self): 
+        return not self._stop_requested
 
     # Thread() has no official stop or shutdown method - the thread finishes
     # when the Thread::run() method returns and thus we must implement our own
     # control logic
+    # Overriding this method: subclasses should call this method first
     def stop(self, reason=None):
         self._stop_requested = True
         stop_reason_message = "stop requested"
         if reason: stop_reason_message += ": %s" % reason
         self.logger.info(stop_reason_message)
-        # subclasses should call this method first
-        

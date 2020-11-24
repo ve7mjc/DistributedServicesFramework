@@ -10,19 +10,22 @@ from pika import BasicProperties
 from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient, ClientType
 from distributedservicesframework.amqp.amqpmessage import AmqpMessage
 
-# TAKE NOTE
+# Important Note on Thread Safety
 # self._connection.ioloop.start() runs in Thread::run()
-# this ioloop is blocking and there are no methods of this class
-# which are thread-safe unless they register a thread-safe callback
-# with the ioloop itself
+# this ioloop is blocking and as all interaction with this ioloop must be
+# done thread-safe by registering a thread-safe callback with the ioloop itself
 
 class AsynchronousProducer(AsynchronousClient):
   
-    # Producer Specific Class Variables
+    # Producer specific Class variables
     blocking_publish_response = Queue()
     blocking_message_id = None
     blocking_publish_mutex = Lock()
     blocking_publish_message_number = None
+    
+    # we will enable delivery confirmations on the channel and register a 
+    # callback for message ack
+    _enable_delivery_confirmations = True
 
     def __init__(self, **kwargs):
         
@@ -33,19 +36,28 @@ class AsynchronousProducer(AsynchronousClient):
         self._message_number = None
         self._application_name = kwargs.get("application_name", None)
         
+        # Let the base class know we are of type AmqpProducer
         super().__init__(ClientType.Producer, **kwargs)
 
-    # Underlying AMQP Client is read.
-    # Connection and Channel is established
-    # Exchanges, Queues, and Bindings are declared
-    def client_ready(self):     
-        self.enable_delivery_confirmations()
-        self.logger.info("AMQP Producer is ready.")
+    # AMQPClient is now ready
+    # Connection and Channel are established
+    # Exchanges, Queues, and Bindings have been declared
+    # Producer specific actions may now be performed
+    def client_ready(self):
+        if self._enable_delivery_confirmations:
+            self.enable_delivery_confirmations()
+        else: 
+            self.producer_ready()
+    
+    # Called when the Producer is now considered ready to publish messages
+    def producer_ready(self):
+        self.logger.info("AMQP Producer is ready for message publishing")
+        self._ready = True
 
-        self.__publish_callback() # there may be messages waiting in the queue already
-
+    # Called from base class AMQPClient prior to a connection is attempted
+    # It is important to note that this will be called on reconnects
+    # session specific variables must be reset to reflect new a session
     def prepare_connection(self):
-
         self._deliveries = []
         self._acked = 0
         self._nacked = 0
@@ -58,9 +70,17 @@ class AsynchronousProducer(AsynchronousClient):
         # new one. When the message is confirmed from RabbitMQ, the
         # on_delivery_confirmation method will be invoked
         self.logger.debug('Enabling Delivery Confirmations with Confirm.Select RPC command')
-        self._channel.confirm_delivery(self.on_delivery_confirmation)
+        self._channel.confirm_delivery(self._on_delivery_confirmation,
+            self._on_confirm_delivery_requested)
+    
+    # called as a callback from channel.confirm_delivery() request has completed
+    def _on_confirm_delivery_requested(self, method_frame):
+        if method_frame.method.NAME.split('.')[1].lower() == "selectok":
+            self.producer_ready()
+            return
+        self.set_failed("channel.confirm_delivery() request has failed")
 
-    def on_delivery_confirmation(self, method_frame):
+    def _on_delivery_confirmation(self, method_frame):
         # RabbitMQ response to a Basic.Publish RPC command
         # passing in either a Basic.Ack or Basic.Nack frame with
         # the delivery tag of the message that was published. The delivery tag
@@ -69,7 +89,6 @@ class AsynchronousProducer(AsynchronousClient):
         # to keep track of stats and remove message numbers that we expect
         # a delivery confirmation of from the list used to keep track of messages
         # that are pending confirmation.
-                
         confirmation_type = method_frame.method.NAME.split('.')[1].lower()
 
         # blocking message response?
@@ -89,8 +108,6 @@ class AsynchronousProducer(AsynchronousClient):
         # if we are connected to a Consumer Queue with outstanding messages?
         # the consumer tag should follow along though so we do not refer to
         # delivery_tags from different consumer_tags
-        
-        
 
         # KEEP FOR REF
         # self._connection.ioloop.call_later(self.PUBLISH_INTERVAL,

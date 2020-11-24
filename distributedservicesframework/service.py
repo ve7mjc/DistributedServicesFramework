@@ -29,6 +29,11 @@ from distributedservicesframework import exceptionhandling
 from distributedservicesframework.servicemonitor import ServiceMonitor
 from distributedservicesframework.statistics import Statistics
 
+#from distributedservicesframework.component import Component
+#from distributedservicesframework import exceptionhandling
+#from distributedservicesframework.servicemonitor import ServiceMonitor
+#from distributedservicesframework.statistics import Statistics
+
 from threading import Thread
 import time
 
@@ -39,7 +44,7 @@ class Service(Component,Thread):
     _config_required = False
 
     def __init__(self, **kwargs):
-        
+
         # Set the handler for signal signalnum to the function handler
         # will be called with 2 arguments - signal.SIG_IGN or signal.SIG_DFL. 
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -47,7 +52,8 @@ class Service(Component,Thread):
         # Process keyword arguments from class initializer
         _config_required = kwargs.get("config_required", False)
 
-        self._name = kwargs.get("name", self.__class__.__name__)
+        if not hasattr(self,"_name") or self._name is None:
+            self._name = kwargs.get("name", self.__class__.__name__)
         
         # Configure logging level for the ROOT LOGGER 
         # Priority is given to the presence of a a keyword argument, then
@@ -124,7 +130,17 @@ class Service(Component,Thread):
         # Configure a logger for this class instance
         # default to useing the name of the lowercase class instance name (name of child class)
         # if it is not specified
-        self._logger_name = getattr(self,"_logger_name",type(self).__name__.lower())
+        # The arduous process of selecting a name for our little logger. 
+        # In order of preference. Subject to change.
+        if "logger_name" in kwargs:
+            self._logger_name = kwargs.get("logger_name")
+        elif hasattr(self,"_logger_name") and self._logger_name is not None:
+            pass # happy, we are.
+        elif hasattr(self,"_name") and self._name is not None:
+            self._logger_name = self._name
+        else:
+            self._logger_name = type(self).__name__.lower()
+        
         self._logger = self.root_logger.getChild(self._logger_name)
         
         # now that logger is up we can report whether we are using a config file or not
@@ -137,12 +153,13 @@ class Service(Component,Thread):
         # The initial name is set by the constructor.
         Thread.__init__(self, name="%s.Service" % self.name)
         
-        # pass reference to Statistics() instance
+        # pass reference to our Statistics Class instance which the
+        # Component constructor would have established
         self._service_monitor = ServiceMonitor(statistics=self._statistics)
         self._service_monitor.start()
         
         # __init__ fini
-        pass
+        pass # like marking a corner!
 
     def load_config(self):
 
@@ -196,6 +213,7 @@ class Service(Component,Thread):
             if hasattr(self, "do_run"): self.do_run()
         except Exception as e:
             self.logger.error("fatal exception in run_loop; must shut down : %s" % exceptionhandling.traceback_string(e))
+            exceptionhandling.print_full_traceback_console()
         
         # subclass is done work and we are shutting down
         

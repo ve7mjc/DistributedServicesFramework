@@ -69,13 +69,14 @@ class AsynchronousConsumer(AsynchronousClient):
         self._queue = kwargs.get("queue", None)
         self._received_messages_queue = kwargs.get("message_queue", None)
         
+        # todo, establish the situation with these status
+        # flags
         self.was_consuming = False
         self._closing = False
         self._consumer_tag = None
         self._consuming = False
 
-        if not self._queue:
-            raise Exception("a queue has not been specified")
+        if not self._queue: self.set_failed("a queue has not been specified")
         
         super().__init__(ClientType.Consumer, **kwargs)
    
@@ -89,8 +90,10 @@ class AsynchronousConsumer(AsynchronousClient):
         if self._prefetch_count is not None:
             self.set_qos(self._prefetch_count)
         else: self.start_consuming()
-        
+    
+    # Consumer is ready. Messages may begin flowing.
     def consumer_ready(self):
+        self._ready = True
         self.logger.info("AMQP Consumer is ready.")
 
     # called prior to connection
@@ -141,6 +144,7 @@ class AsynchronousConsumer(AsynchronousClient):
             self._queue, self.__on_message, auto_ack=False)
         self.was_consuming = True
         self._consuming = True
+        
         self.consumer_ready()
         
 #    # add callback to be told if RabbitMQ cancels the consumer
@@ -155,16 +159,14 @@ class AsynchronousConsumer(AsynchronousClient):
         self.logger.info('consumer was cancelled remotely, shutting down: %r', method_frame)
         if self._channel:
             self._channel.close()
-        
         # Is the consumer_tag now invalid? Let's assume so for now since we
         # make use of this property to correlate Message Acknowledgements
         self._consumer_tag = None
+        self.set_failed("consumer has been cancelled")
 
     # this method is called immediately upon message arrival
     def __on_message(self, _unused_channel, basic_deliver, properties, body):
-        # 'pika.spec.Basic.Deliver'
-        # 'pika.spec.BasicProperties'
-        # 'bytes'
+        # 'pika.spec.Basic.Deliver', properties'pika.spec.BasicProperties', 'bytes'
 
         # do stats and health checks
         self.last_message_received_time = datetime.now()

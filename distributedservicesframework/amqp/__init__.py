@@ -1,3 +1,5 @@
+# distributedservicesframework :: amqp subpackage
+#
 
 # Bring Classes into scope of this package
 from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient

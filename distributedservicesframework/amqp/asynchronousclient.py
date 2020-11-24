@@ -49,7 +49,7 @@ class AsynchronousClient(Component,Thread):
     _connection = None
     _channel = None
     _reconnect_attempts = 0
-    should_reconnect = False
+    _automatic_reconnect = True
     _amqp_url = None
     
     _exchange = None
@@ -110,6 +110,7 @@ class AsynchronousClient(Component,Thread):
         Component.__init__(self, statistics=statistics)
         Thread.__init__(self)
         
+        self.set_loglevel("debug")
     
     # convenience method to add a routing_key pattern
     # to the class instance list of bindings
@@ -122,7 +123,6 @@ class AsynchronousClient(Component,Thread):
         # returning the connection handle 'pika.SelectConnection'
         # asynchronous callbacks: on_connection_open, on_open_error_callback,
         # and on_open_error_callback
-
         if self._connection_parameters:
             parameters = self._connection_parameters
         elif self._amqp_url and self._amqp_url.startswith("amqps://"):
@@ -472,22 +472,32 @@ class AsynchronousClient(Component,Thread):
     # of this instance class
     def do_run(self):
         
-        self._connection = None
-        
         # default to reconnecting on unexpected channel and connection closures
-        self.should_reconnect = True
-        while self.should_reconnect:
+        while not self._stop_requested:
+
+            # Make sure that calling methods may check the status of connection
+            # or throw an exception should it be illegally accessed            
+            self._connection = None
             
-            # call Producer or Consumer specific methods
-            self.prepare_connection()
+            self.prepare_connection() # child class specific methods
             
-            self._connection = self.connect()
+            # non-blocking, asynchronous call immediately returns a
+            # connection object
+            self._connection = self.connect() 
+            
+            # block here until released
             self._connection.ioloop.start()
             
-            # establish reconnect parameters with adaptive delays
-            if self.should_reconnect:
+            # We have disconnected
+            # Was this requested, and if not, is automatic reconnect enabled?
+            # Otherwise, we must repeat this loop immediately the first time
+            # and then increase our loop delay on subsequent reconect attempts
+            if not self._stop_requested and self._automatic_reconnect:
+                
+                self.set_failed("connection lost")
                 
                 if not self._reconnect_attempts:
+                    # first reconnect attempt
                     self.logger.info("reconnecting..")
                     self._reconnect_attempts = 1
                 else:
@@ -501,15 +511,21 @@ class AsynchronousClient(Component,Thread):
                     
                     # we are no longer blocking on the ioloop so we cant block here too long
                     # or we will be non-responsive to a shutdown request while waiting
+                    # check stop_request frequently
                     delay_10_ms = delay_time * 100
                     for i in range(delay_10_ms):
-                        if self.should_reconnect:
+                        if not self._stop_requested:
                             time.sleep(0.01)
-                        else:
-                            break
+                        else: break
+                    
+            # Connection has disconnected
+            if not self._automatic_reconnect and not self._stop_requested:
+                # This was not requested and automatic reconnect is not enabled
+                self.stop("connection failed")
+                break
 
         # we have completed work in this method
-        self.logger.debug('AsynchronousAmqpClient::run() work done; thread exiting..')
+        self.logger.debug('AsynchronousAmqpClient::run() work done is done; thread exiting..')
 
     # reimplement me!
     def stop_activity(self):
@@ -519,15 +535,17 @@ class AsynchronousClient(Component,Thread):
 
     # call this method if you would like to gracefully shut down the consumer
     # this will result in the thread exiting once the ioloop has completed
-    def stop(self):
+    def stop(self,reason=None):
+        super().stop(reason)
         
         self.should_reconnect = False
+        
         self.logger.debug('AsynchronousAmqpClient::stop() called; requested a threadsafe callback for ioloop to call stop_consuming()')
         
         # add a thread-safe callback to the ioloop which will allow
         # us to stop the ioloop from another thread. No methods are
         # are thread-safe to interact with the ioloop!
-        self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
-        
-        super().stop()
-        
+        # _connection starts as None and then becomes:
+        # <class 'pika.adapters.select_connection.SelectConnection'>
+        if self._connection: self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
+    
