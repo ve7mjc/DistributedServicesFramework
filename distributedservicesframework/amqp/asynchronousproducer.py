@@ -17,6 +17,8 @@ from distributedservicesframework.amqp.amqpmessage import AmqpMessage
 
 class AsynchronousProducer(AsynchronousClient):
   
+    _client_type = ClientType.Producer
+  
     # Producer specific Class variables
     blocking_publish_response = Queue()
     blocking_message_id = None
@@ -25,8 +27,8 @@ class AsynchronousProducer(AsynchronousClient):
     
     # we will enable delivery confirmations on the channel and register a 
     # callback for message ack
-    _enable_delivery_confirmations = True
-
+    _enable_delivery_confirmations = True    
+    
     def __init__(self, **kwargs):
         
         # Producer Specific Initialization
@@ -36,8 +38,7 @@ class AsynchronousProducer(AsynchronousClient):
         self._message_number = None
         self._application_name = kwargs.get("application_name", None)
         
-        # Let the base class know we are of type AmqpProducer
-        super().__init__(ClientType.Producer, **kwargs)
+        super().__init__(**kwargs)
 
     # AMQPClient is now ready
     # Connection and Channel are established

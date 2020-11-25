@@ -45,6 +45,9 @@ class ClientType(Enum):
 # Notify sub-classes (Producer or Consumer) client is ready via ::client_ready()
 class AsynchronousClient(Component,Thread):
 
+    # declare me in a Producer, Consumer, class etc
+    _client_type = ClientType.Unspecified
+
     # Connection related
     _connection = None
     _channel = None
@@ -69,14 +72,12 @@ class AsynchronousClient(Component,Thread):
     # thread-safe message queueu for:
     # outgoing, non-blocking publish with asynchronous ack
     # incoming messages
-    message_queue = Queue()
+    #message_queue = Queue()
 
-    def __init__(self, client_type, **kwargs):
+    def __init__(self, **kwargs):
 
         # disable pika logging for now
         pika_logger = logging.getLogger("pika").setLevel(logging.CRITICAL) # logging.CRITICAL
-
-        self._client_type = client_type
 
         # process keyword arguments
         loglevel = kwargs.get("loglevel", logging.NOTSET)
@@ -91,38 +92,35 @@ class AsynchronousClient(Component,Thread):
         
         # module name for the purpose of logging and disk writes
         if not self._name:
-            if client_type == ClientType.Producer:
+            if self._client_type == ClientType.Producer:
                 self._name = "amqpclient.producer"
-            elif client_type == ClientType.Consumer:
+            elif self._client_type == ClientType.Consumer:
                 self._name = "amqpclient.consumer"
             else:
                 self._name = "amqpclient"
-        
-        # consumer specific?
-#        self.was_consuming = False
-#        self._consumer_tag = None
-#        self._consuming = False
-        
+
         # dynamic creation of queue bindings cache file
         self._bindings_cache_filename = "%s-bindings.cache" % self._name.lower()
 
-        # Call Constructors
-        Component.__init__(self, statistics=statistics)
-        Thread.__init__(self)
-        
-        self.set_loglevel("debug")
-    
-    # convenience method to add a routing_key pattern
-    # to the class instance list of bindings
-    # must be done prior to calling connection.connect (Thread::start())
+        super().__init__(**kwargs)
+
+    # Method called when this AMQP client has completed its connection
+    # steps and a Producer or Consumer can now begin their specific steps.
+    # Override me in a child class!
+    def client_ready(self): 
+        print("AsynchronousClient.client_ready() called - needs to be overridden!")
+
+    # Add a routing_key pattern
+    # Exchanges and Queues must be declared in order for this to be useful
+    # must be done prior to calling connection.connect ( Thread.start() )
     def add_binding(self, routing_key_pattern):
         self._bindings.append(routing_key_pattern)
 
+    # Connect to RabbitMQ using the asynchronous SelectConnection adapter
+    # Returns a connection handle 'pika.SelectConnection'
+    # Registers asynchronous callbacks: on_connection_open, 
+    #   on_open_error_callback, and on_open_error_callback
     def connect(self):
-        # connect to RabbitMQ
-        # returning the connection handle 'pika.SelectConnection'
-        # asynchronous callbacks: on_connection_open, on_open_error_callback,
-        # and on_open_error_callback
         if self._connection_parameters:
             parameters = self._connection_parameters
         elif self._amqp_url and self._amqp_url.startswith("amqps://"):
@@ -132,30 +130,39 @@ class AsynchronousClient(Component,Thread):
             # Could the issue of certificate mismatch with MSC AMQP broker
             # be related to missing CA certs on our client side?
             parameters = pika.URLParameters(self._amqp_url)
-            # add this to bypass certificate errors
+            # bypass certificate errors
             parameters.ssl_options = pika.SSLOptions(SSLContext())
         elif self._amqp_url and self._amqp_url.startswith("amqp://"):
             parameters = pika.URLParameters(self._amqp_url)
-        elif self._host:
-            # simple host-only scenario
+        elif self._host: # simple host-only scenario
             parameters = pika.ConnectionParameters(self._host, 5672, '/')
-        else:
-            # default to localhost
+        else: # default to localhost
             parameters = pika.ConnectionParameters("localhost", 5672, '/')
         
         # todo - add connection parameters to this log entry
         self.logger.debug("Connecting to AMQP Broker")
-            
-        connection = pika.SelectConnection(parameters=parameters,
-                on_open_callback=self.on_connection_open,
-                on_open_error_callback=self.on_connection_open_error,
-                on_close_callback=self.on_connection_closed)
-            
-        return connection
 
-    # reimplement me!
-    def client_ready(self):
-        pass
+        return pika.SelectConnection(parameters=parameters,
+                    on_open_callback=self.on_connection_open,
+                    on_open_error_callback=self.on_connection_open_error,
+                    on_close_callback=self.on_connection_closed)
+
+    # Close the RabbitMQ connection
+    def close_connection(self):
+        self.logger.debug('closing connection')
+        self._connection.close()
+
+    # Callback Method called from pika connection when connection is closed
+    # param pika.connection.Connection connection: The closed connection obj
+    # param Exception reason: exception representing reason for loss of
+    #    connection.
+    def on_connection_closed(self, connection, reason):
+        # this connection closing was unexpected - stop() was not called
+        if self.keep_working:
+            self.logger.warning('Connection closed: %s', reason)
+        # the ioloop stays in play despite losing the connection so we need to force
+        # it to exit so we can move on with code execution in self::run()
+        self._connection.ioloop.stop()
 
     # AMQP Client is read.
     # Connection and Channel are established and open
@@ -165,21 +172,18 @@ class AsynchronousClient(Component,Thread):
         self._reconnect_attempts = 0 # reset
         self.client_ready()
 
-    def close_connection(self):
-        self.logger.debug('closing connection')
-        self._connection.close()
-
+    # Callback method called by pika once the RabbitMQ connection has
+    # been established.
+    # Passes pika.SelectConnection handle which we should already have
+    # Open a RabbitMQ channel by sending a Channel.Open RPC Command with 
+    # an on_open callback
     def on_connection_open(self, _unused_connection):
-        """This method is called by pika once the connection to RabbitMQ has
-        been established. It passes the handle to the connection object in
-        case we need it, but in this case, we'll just mark it unused.
-        :param pika.SelectConnection _unused_connection: The connection
-        """
         self.logger.debug('connection open')
-        self.open_channel()
+        self._connection.channel(on_open_callback=self.on_channel_open)
 
+    # Callback method called by pika if the connection to RabbitMQ 
+    # cannot be established.
     def on_connection_open_error(self, connection, error):
-        # called by pika if the connection to RabbitMQ can't be established.
 
         import socket # for exception class comparisons
 
@@ -215,34 +219,14 @@ class AsynchronousClient(Component,Thread):
         # it to exit so we can move on with code execution in self::run()
         self._connection.ioloop.stop()
 
-    def on_connection_closed(self, _unused_connection, reason):
-        # method called when connection is closed
-        # param pika.connection.Connection connection: The closed connection obj
-        # param Exception reason: exception representing reason for loss of
-        #    connection.
-
-        if self.should_reconnect:
-            # this connection closing was not expected, eg. it was not called
-            # through self::stop()
-            self.logger.warning('Connection closed: %s', reason)
-        
-        # the ioloop stays in play despite losing the connection so we need to force
-        # it to exit so we can move on with code execution in self::run()
-        self._connection.ioloop.stop()
-        
-    def open_channel(self):
-        """Open a new channel with RabbitMQ by issuing the Channel.Open RPC
-        command. When RabbitMQ responds that the channel is open, the
-        on_channel_open callback will be invoked by pika.
-        """
-        self._connection.channel(on_open_callback=self.on_channel_open)
-        
+    # Cleanly close RabbitMQ channel
+    # Send Channel.Close RPC command. Callback is already registered.
     def close_channel(self):
-        # Close channel cleanly
-        # Send RabbitMQ Channel.Close RPC command
         self.logger.debug('Closing the channel')
         self._channel.close()
 
+    # Method to allow us to specify a binding request prior to connection
+    # which will be performed on connect and every reconnect
     def add_binding(self, queue, exchange, routing_key):
         binding = {}
         binding['queue'] = queue
@@ -250,78 +234,67 @@ class AsynchronousClient(Component,Thread):
         binding['routing_key'] = routing_key
         self._bindings.append(binding)
 
+    # Callback method RabbitMQ calls when a channel has been opened
+    # Passes ika.channel.Channel handle
+    # Request a on_channel_close callback and proceed with session startup
     def on_channel_open(self, channel):
-        """This method is invoked by pika when the channel has been opened.
-        The channel object is passed in so we can make use of it.
-        Since the channel is now open, we'll declare the exchange to use.
-        :param pika.channel.Channel channel: The channel object
-        """
-        self.logger.debug('channel opened')
-        
+        self.logger.debug('channel opened')        
         self._channel = channel
-        self.add_on_channel_close_callback()
-        
+        self._channel.add_on_close_callback(self.on_channel_closed)
         self.setup_exchange(self._exchange)
 
-    def add_on_channel_close_callback(self):
-        """This method tells pika to call the on_channel_closed method if
-        RabbitMQ unexpectedly closes the channel.
-        """
-        self._channel.add_on_close_callback(self.on_channel_closed)
-
+    # Callback method called by RabbitMQ when a channel has been closed
+    # Channels are closed any time a request has violated a protocol
+    # TODO: Make sure we do not get into a reconnect flood here as we are 
+    #  likely to repeat the same actions which caused this close
+    # Passes the closed pika.channel.Channel and Exception reason
     def on_channel_closed(self, channel, reason):
-        """Invoked by pika when RabbitMQ unexpectedly closes the channel.
-        Channels are usually closed if you attempt to do something that
-        violates the protocol, such as re-declare an exchange or queue with
-        different parameters. In this case, we'll close the connection
-        to shutdown the object.
-        :param pika.channel.Channel: The closed channel
-        :param Exception reason: why the channel was closed
-        """
-        if self.should_reconnect:
+        if self.keep_working:
             self.logger.warning('Channel was closed unexpectedly: %s' % reason)
-        self.close_connection()
+        
+        # 25 Nov 2020 - removing this as it is causing problems
+        #self.close_connection()
 
+    # Setup exchange on RabbitMQ
+    # Send the Exchange.Declare RPC command with a callback method for pika
     def setup_exchange(self, exchange_name):
-        """Setup the exchange on RabbitMQ by invoking the Exchange.Declare RPC
-        command. When it is complete, the on_exchange_declareok method will
-        be invoked by pika.
-        :param str|unicode exchange_name: The name of the exchange to declare
-        """
         if self._exchange and self._setup_exchange_enabled:
-            self.logger.debug('Declaring exchange: %s', exchange_name)
-            # Note: using functools.partial is not required, it is demonstrating
-            # how arbitrary data can be passed to the callback when it is called
+            self.logger.debug('declaring exchange: %s', exchange_name)
             cb = functools.partial(
-                self.on_exchange_declareok, userdata=exchange_name)
+                self.on_exchange_declare, userdata=exchange_name)
             self._channel.exchange_declare(
                 exchange=exchange_name,
                 exchange_type=self.EXCHANGE_TYPE,
                 callback=cb)
-        else:
-            # proceed directly to queue setup
-            self.setup_queue(self._queue)
+            return
+
+        # proceed directly to queue setup instead
+        self.setup_queue(self._queue)
                 
-    def on_exchange_declareok(self, _unused_frame, userdata):
-        """Invoked by pika when RabbitMQ has finished the Exchange.Declare RPC
-        command.
-        :param pika.Frame.Method unused_frame: Exchange.DeclareOk response frame
-        :param str|unicode userdata: Extra user data (exchange name)
-        """
+    # Callback method for pika on the outcome of Exchange.Declare RPC command
+    # :param pika.Frame.Method method_frame Exchange.DeclareOk response
+    # :param str|unicode userdata: Extra user data (exchange name)
+    def on_exchange_declare(self, method_frame, userdata):
         self.logger.info('Exchange declared: %s', userdata)
         self.setup_queue(self._queue)
 
+    # Setup queue on RabbitMQ
+    # Send the Queue.Declare RPC command with a callback request
+    # :param str|unicode queue_name: The name of the queue to declare.
     def setup_queue(self, queue_name):
-        """Setup the queue on RabbitMQ by invoking the Queue.Declare RPC
-        command. When it is complete, the on_queue_declareok method will
-        be invoked by pika.
-        :param str|unicode queue_name: The name of the queue to declare.
-        """
         if self._setup_queue_enabled and self._queue:
-            cb = functools.partial(self.on_queue_declareok, userdata=queue_name)
+            cb = functools.partial(self.on_queue_declare, userdata=queue_name)
             self._channel.queue_declare(queue=queue_name, callback=cb, durable=self._queue_durable)
-        else:
-            self.do_queue_binds()
+            return
+        # or - skip directly to binding    
+        self.do_queue_binds()
+
+    # Callback Method for pika when Queue.Declare RPC call has finished
+    # We may now begin Exchange<>Queue routing_key bindings
+    # TODO: Confirm OK in frame?
+    def on_queue_declare(self, method_frame, userdata):
+        self.logger.debug('declared queue: %s', userdata)
+        self.do_queue_binds()
 
     # write/load a json file from disk containing a list of queues and bindings
     # for the purpose of cleaning up should our application request different
@@ -332,7 +305,7 @@ class AsynchronousClient(Component,Thread):
                 bindings_cache.append(binding)
             with open(self._bindings_cache_filename, 'w') as outfile:
                 json.dump(bindings_cache, outfile, indent=4)
-                
+
     def load_queue_bindings_cache(self):
         if self._bindings_cache_filename:
             try:
@@ -349,7 +322,12 @@ class AsynchronousClient(Component,Thread):
         return []                    
         #raise Exception("self._bindings_cache_filename not populated")
     
-    # call Client::client_ready() when this stage is completed
+    # Recursive callback Method for Queue Binding cleanup
+    # Clean up queue bindings if we determine that we have requested queue
+    # bindings which are different than those we have requested in the past
+    # This helps with scenarios where we do not have management access to a
+    # RabbitMQ broker and we wish to clean up after ourselves
+    # Client.client_ready() is called when this stage has completed
     def do_queue_bindings_cleanup(self, in_callback=False):
         # callback will be populated by the sender and so do our 
         # setup and initial action with callback, or proceed onward
@@ -389,10 +367,7 @@ class AsynchronousClient(Component,Thread):
 
         else: 
             # We are in a callback return.
-            # There are 
-
             self._bindings_unbound += 1
-            
             if len(self._bindings_to_cleanup):
                 binding = self._bindings_to_cleanup.pop()
                 self.logger.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
@@ -429,51 +404,12 @@ class AsynchronousClient(Component,Thread):
         else:
             self.do_queue_bindings_cleanup()
 
-    def on_queue_declareok(self, _unused_frame, userdata):
-        """Method invoked by pika when the Queue.Declare RPC call made in
-        setup_queue has completed. In this method we will bind the queue
-        and exchange together with the routing key by issuing the Queue.Bind
-        RPC command.
-        :param pika.frame.Method _unused_frame: The Queue.DeclareOk frame
-        :param str|unicode userdata: Extra user data (queue name)
-        """
-        self.logger.debug('declared queue: %s', userdata)
-        self.do_queue_binds()
-
-#        hdrs = {u'?????': u' ????', u'?': u'?', u'??': u'?'}
-#        properties = pika.BasicProperties(
-#            app_id='example-publisher',
-#            content_type='application/json',
-#            headers=hdrs)
-#
-#        message = u'????? ???? ? ? ?? ?'
-#        self._channel.basic_publish(self.EXCHANGE, self.ROUTING_KEY,
-#                                    json.dumps(message, ensure_ascii=False),
-#                                    properties)
-#        self._message_number += 1
-#        self._deliveries.append(self._message_number)
-#        self.logger.info('Published message # %i', self._message_number)
-#        self.schedule_next_message()
-
-#    def stop_producer(self):
-#        """Stop the example by closing the channel and connection. We
-#        set a flag here so that we stop scheduling new messages to be
-#        published. The IOLoop is started because this method is
-#        invoked by the Try/Catch below when KeyboardInterrupt is caught.
-#        Starting the IOLoop again will allow the publisher to cleanly
-#        disconnect from RabbitMQ.
-#        """
-#        self.logger.debug('Stopping')
-#        self._stopping = True
-#        self.close_channel()
-#        self.close_connection()
-
-    # this method is called by the thread worker after calling the start()
-    # of this instance class
+    # This method is called by the Child.run() method after being called by
+    # the Thread.start() method.
     def do_run(self):
         
         # default to reconnecting on unexpected channel and connection closures
-        while not self._stop_requested:
+        while self.keep_working:
 
             # Make sure that calling methods may check the status of connection
             # or throw an exception should it be illegally accessed            
@@ -492,9 +428,9 @@ class AsynchronousClient(Component,Thread):
             # Was this requested, and if not, is automatic reconnect enabled?
             # Otherwise, we must repeat this loop immediately the first time
             # and then increase our loop delay on subsequent reconect attempts
-            if not self._stop_requested and self._automatic_reconnect:
+            if self.keep_working and self._automatic_reconnect:
                 
-                self.set_failed("connection lost")
+                self.set_failed("connection failed")
                 
                 if not self._reconnect_attempts:
                     # first reconnect attempt
@@ -518,18 +454,17 @@ class AsynchronousClient(Component,Thread):
                             time.sleep(0.01)
                         else: break
                     
-            # Connection has disconnected
-            if not self._automatic_reconnect and not self._stop_requested:
-                # This was not requested and automatic reconnect is not enabled
+            # Connection has disconnected but automatic reconnect is disabled
+            # Not sure who would be crazy enough to roll this way
+            if not self._automatic_reconnect and self.keep_working:
                 self.stop("connection failed")
                 break
 
         # we have completed work in this method
-        self.logger.debug('AsynchronousAmqpClient::run() work done is done; thread exiting..')
+        self.logger.debug('AsynchronousAmqpClient.do_run() work done is done; thread exiting..')
 
     # reimplement me!
     def stop_activity(self):
-        self._closing = True
         if self._channel:
             self.close_channel()
 
@@ -538,14 +473,9 @@ class AsynchronousClient(Component,Thread):
     def stop(self,reason=None):
         super().stop(reason)
         
-        self.should_reconnect = False
-        
-        self.logger.debug('AsynchronousAmqpClient::stop() called; requested a threadsafe callback for ioloop to call stop_consuming()')
-        
-        # add a thread-safe callback to the ioloop which will allow
-        # us to stop the ioloop from another thread. No methods are
-        # are thread-safe to interact with the ioloop!
-        # _connection starts as None and then becomes:
+        # No methods in this class, nor other threads are safe to interact 
+        # with the ioloop and must instead register a callback request
+        # self._connection is None before and after connection and when connected
         # <class 'pika.adapters.select_connection.SelectConnection'>
-        if self._connection: self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
-    
+        if self._connection:
+            self._connection.ioloop.add_callback_threadsafe(self.stop_activity)

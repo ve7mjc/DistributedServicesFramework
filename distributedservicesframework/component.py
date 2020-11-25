@@ -56,8 +56,8 @@ class Component():
     
     _loglevel = None
     
-    def __init__(self,**kwargs):
-        
+    def __init__(self, **kwargs):
+
         # Default module name to name of inhereting class
         # os.path.splitext(os.path.basename(sys.argv[0]))[0])
         # Some scenarios such as that of Service multi-Inheritance
@@ -72,8 +72,8 @@ class Component():
         if "loglevel" in kwargs: self._loglevel = kwargs.get("loglevel")
 
         # Logger - Do not override logging it if has been configured
-        # prior to this constructor
-        if not hasattr(self, "_logger"):
+        # prior to this constructor.
+        if not hasattr(self,"_logger"):
             
             # Just the logger name - it is important
             if "logger_name" in kwargs:
@@ -84,7 +84,6 @@ class Component():
                 self._logger_name = self._name
             else:
                 self._logger_name = type(self).__name__.lower()
-            # logger_name = kwargs.get("logger_name", self.name).lower()
             
             self._logger = logging.getLogger(self._logger_name)
             if not self._loglevel: self._loglevel = logging.WARNING
@@ -93,6 +92,10 @@ class Component():
         # create a class instance if one does not exist
         if not self._statistics:
             self._statistics = Statistics(component_name=self.name)
+        
+        # bestow super powers to this class so it may participate in 
+        # multiple-inheritance greatness
+        super().__init__()
             
     @property
     def name(self): return self._name
@@ -105,6 +108,7 @@ class Component():
 
     # An unrecoverable condition is present which prevents 
     # this component from being able to fulfil its intended function
+    # Components start out not failed and require a set_failed() call
     def is_failed(self): return self._failed
     _failed = False
     
@@ -114,9 +118,11 @@ class Component():
     _failed_reason = None
     
     # Called when we have detected a critical and unrecoverable fault
-    # Optional reason which can be retrieved
+    # Optional reason which can be retrieved. Use this method so we make
+    # sure the necessary steps are taken
     def set_failed(self, failure_reason=None):
-        self.failed = True
+        self._ready = False
+        self._failed = True
         self._failed_reason = failure_reason
         self.stop("failure: %s" % failure_reason)
         
@@ -138,15 +144,31 @@ class Component():
     def statistics(self):
         return self._statistics
     
-    # here we provide a run method so that we may name our child class
-    # Thread::run() methods do_run() instead to remain consistent
-    # Namely for AMQP AsynchronousClienst
+    # Here we provide a run method so that we may name our child class
+    # Thread::start() will call this overridden method which will in turn
+    # Why EXACTLY was this done? Are we going to do cleanup also?
     def run(self):
+        
         if hasattr(self,"do_run"): 
-            try: self.do_run()
+            try: 
+                self.do_run()
             except Exception as e:
                 self.logger.error("error in do_run method! %s" % e)
                 raise Exception(e)
+                # todo - beef this up
+        else:
+            self.logger.warning("%s.run() has been called. Make sure this class has a do_run() method defined" % type(self).__name__)
+            
+        # set this True so calls to Child::stopped() will return True
+        # This method is likely called from a Thread::start() call and the 
+        # do_run() child method has exited and thus work is stopped
+        self._stop_requested = True
+
+    # convenience method to reverse logic and make flow logic more clear
+    # Returns true if a shutdown has not been requested
+    @property
+    def keep_working(self): 
+        return not self._stop_requested
 
     # set the logging level of a logger by name or if only one argument
     # supplied, apply to this instance logger!
@@ -182,11 +204,16 @@ class Component():
             return self._enabled_test_modes[test_mode_name]
         return False
 
-    # convenience method to reverse logic and make flow logic more clear
-    # Returns true if a shutdown has not been requested
-    @property
-    def keep_working(self): 
-        return not self._stop_requested
+    # present a start method so we may be called similar to a class which 
+    # extends a Thread
+    def start(self,**kwargs):        
+        if hasattr(super(),"start"):     
+            # pass this call to a parent if it exists (eg. a Thread)
+            super().start(**kwargs)
+        else:
+            # if we have not provided a start() method in our child class
+            # then we do not have a startup process
+            self._ready = True            
 
     # Thread() has no official stop or shutdown method - the thread finishes
     # when the Thread::run() method returns and thus we must implement our own
@@ -197,3 +224,15 @@ class Component():
         stop_reason_message = "stop requested"
         if reason: stop_reason_message += ": %s" % reason
         self.logger.info(stop_reason_message)
+
+    # Provide a stopped property so we may query the status of this component
+    # after have requested it stop through the stop() method.
+    # Most importantly we want to be able to query a Thread status with 
+    # Thread::is_alive() but unless we in a subclass which extends a Thread
+    # then we will not have this method. Instead return the _stop_requested()
+    # status unless we provide an override in a subclass
+    @property
+    def stopped(self):
+        if hasattr(self,"is_alive"):
+            return self.is_alive()
+        else: return self._stop_requested

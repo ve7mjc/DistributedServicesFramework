@@ -15,9 +15,10 @@ class MessageProcessingFailedError(Exception):
 class MessageTypeIgnored(Exception):
     pass
 
-# A message input adapter, such as an AMQP Producer has failed to start up
-class MessageInputAdapterFailedStartup(Exception):
+# Message Adapter has Timed out getting to ready on startup
+class MessageAdapterStartupTimeout(Exception):
     pass
-
-class MessageInputAdapterStartupTimeout(Exception):
+    
+# Message Adapter has claimed itself failed during startup
+class MessageAdapterStartupFailed(Exception):
     pass

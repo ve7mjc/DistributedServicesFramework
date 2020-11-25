@@ -45,7 +45,8 @@ def match_routing_key(routing_key, bind_pattern):
 # routing_key unharmed
 # account for whether a delimiter (.) may or may not be present at the end
 def remove_routing_key_prefix(routing_key, prefix):
-    if not prefix.endswith("."): prefix += "."
-    if routing_key.startswith(prefix):
-        return routing_key[len(prefix):]
-    return routing_key # no change
+    if prefix:
+        if not prefix.endswith("."): prefix += "."
+        if routing_key.startswith(prefix):
+            return routing_key[len(prefix):]
+    return routing_key # ok - no change

@@ -9,12 +9,7 @@ from datetime import datetime
 from distributedservicesframework import utilities, exceptionhandling
 from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient, ClientType
 from distributedservicesframework.amqp.amqpmessage import AmqpMessage
-
-# TAKE NOTE
-# self._connection.ioloop.start() runs in Thread::run()
-# this ioloop is blocking and there are no methods of this class
-# which are thread-safe unless they register a thread-safe callbacks
-# with the ioloop itself
+from distributedservicesframework.amqp.amqputilities import *
 
 # todo, if channel is closed on connect - it will not quit nicely (hangs)
 #2020-11-16 00:12:53,062 pika.channel WARNING Received remote Channel.Close (404): "NOT_FOUND - no queue 'weather_test' in vhost '/'" on <Channel number=1 OPEN conn=<SelectConnection OPEN transport=<pika.adapters.utils.io_services_utils._AsyncPlaintextTransport object at 0x7f0c659fcc10> params=<ConnectionParameters host=localhost port=5672 virtual_host=/ ssl=False>>>
@@ -23,62 +18,62 @@ from distributedservicesframework.amqp.amqpmessage import AmqpMessage
 #2020-11-16 00:12:53,064 msc-processor.Consumer DEBUG requested a threadsafe callback for ioloop to call stop_consuming()
 #2020-11-16 00:12:59,588 msc-processor.Consumer DEBUG requested a threadsafe callback for ioloop to call stop_consuming()
 
-# receiving messages
-# Either re-implement on_message()
-# or pass a Queue in
+# This Asynchronous Consumer will operate in one of two modes:
+# - Shared Queue mode: If a reference to a Queue object is passed in to the 
+#    constructor as a "message_queue" keyword-argument, the consumer will
+#    begin placing received messages in this Queue as they arrive.
+# - Derived Method: If a derived subclass declares an method named on_message(),
+#    the messages will be passed to it. See this class _on_message(..) method
+#    for prototype.
 
 # Test Modes
 # amqp_nack_requeue_all_messages
-# 
-
+# todo - should we respond to amqp.consumer.* ?
 class AsynchronousConsumer(AsynchronousClient):
+
+    _client_type = ClientType.Consumer
 
     _exchange = None
     _exchange_type = None
     _queue = None
     
+    # Default behavior
+    _prefetch_count = 1
+    _durable_queue = False
+    should_reconnect = False
+    _do_bindings_cleanup = False
+    _application_name = None
     _declare_queue = True # should we attempt to create the queue on the server?
+    
+    # scratch vars
+    _reconnect_attempts = 0
+    _queues_bound = 0
+    last_message_received_time = None
     _bindings = []
     _bindings_cache = None
     _bindings_to_cleanup = []
-    _do_bindings_cleanup = False
-    _queues_bound = 0
-    _durable_queue = False
-    should_reconnect = False
-    last_message_received_time = None
-    _application_name = None
-    
-    _reconnect_attempts = 0
-    
-    # In production, experiment with higher prefetch values
-    # for higher consumer throughput
-    _prefetch_count = 1
+    _strip_routing_key_prefix = None
     
     # leave in classdef to make child class init more likely
     _ack_disabled_max_preflight = False
     _prefetch_count_pre_disable = None
     
-    # this is used when we want to connect a Producer and its
-    # message delivery confirmations with messages that originated
-    # from this consumer - such as in a data adapter / processor scenario
-    # STOP - planning on using threadsafe callback connections instead
-    #_message_ack_requests_queue = Queue()
-
+    # Consumer will place messages if this is a Queue type
+    _receive_messages_queue = None
+    _receive_message_callback = None
+    
     def __init__(self, **kwargs):
-        
+
         self._queue = kwargs.get("queue", None)
         self._received_messages_queue = kwargs.get("message_queue", None)
+        self._strip_routing_key_prefix = kwargs.get("strip_key_prefix", None)
         
-        # todo, establish the situation with these status
-        # flags
-        self.was_consuming = False
-        self._closing = False
         self._consumer_tag = None
         self._consuming = False
 
         if not self._queue: self.set_failed("a queue has not been specified")
         
-        super().__init__(ClientType.Consumer, **kwargs)
+        super().__init__(**kwargs)
    
     # Called when the underlying AMQP Client is ready
     # The TCP (or TLS) connection is established, channel is open, 
@@ -96,9 +91,9 @@ class AsynchronousConsumer(AsynchronousClient):
         self._ready = True
         self.logger.info("AMQP Consumer is ready.")
 
-    # called prior to connection
-    def prepare_connection(self):
-        pass
+    # called prior to connection (and reconnection) attempt
+    # declare here to quiet the base class warnings
+    def prepare_connection(self): pass
         
     # testing mode
     # disable message ack and set pre_fetch to 0 which will
@@ -116,19 +111,17 @@ class AsynchronousConsumer(AsynchronousClient):
 
     # Configure Consumer Message QoS/Prefetch by sending Basic.QoS to RabbitMQ
     def set_qos(self, prefetch_count):
-        # do not send if not specified
-        if prefetch_count is not None:
+        if prefetch_count: # do not send if not specified
             self.logger.debug("sending Basic.QoS (message prefetch) request for %d", self._prefetch_count)
-            self._channel.basic_qos(prefetch_count=self._prefetch_count, callback=self.on_basic_qos_ok)
+            self._channel.basic_qos(prefetch_count=self._prefetch_count, callback=self.on_basic_qos)
         else:
             self.start_consuming()
 
-    def on_basic_qos_ok(self, _unused_frame):
-        """Invoked by pika when the Basic.QoS method has completed. At this
-        point we will start consuming messages by calling start_consuming
-        which will invoke the needed RPC commands to start the process.
-        :param pika.frame.Method _unused_frame: The Basic.QosOk response frame
-        """
+    # Callback method for pika when the Basic.QoS request has completed
+    # We are ready to start consuming
+    # :param pika.frame.Method method: The Basic.QosOk response frame
+    # todo - confirm method_frame response
+    def on_basic_qos(self, method):
         self.logger.debug('qos/prefetch successfully set to: %d', self._prefetch_count)
         self.start_consuming()
 
@@ -141,72 +134,79 @@ class AsynchronousConsumer(AsynchronousClient):
         self.logger.debug("sending Basic.Cancel callback request")
         self._channel.add_on_cancel_callback(self.on_consumer_cancelled)
         self._consumer_tag = self._channel.basic_consume(
-            self._queue, self.__on_message, auto_ack=False)
-        self.was_consuming = True
+            self._queue, self._on_message, auto_ack=False)
         self._consuming = True
-        
         self.consumer_ready()
         
-#    # add callback to be told if RabbitMQ cancels the consumer
-#    # Basic.Cancel
-#    def add_on_cancel_callback(self):
-#        self.logger.info("sending Basic.Cancel callback request")
-#        self._channel.add_on_cancel_callback(self.on_consumer_cancelled)
+    @property
+    def is_consuming(self):
+        return self._consuming
 
+    @property
+    def consumer_tag(self):
+        return self._consumer_tag
+        
+    # RabbitMQ sent a Basic.Cancel for a consumer receiving messages
+    # <class 'pika.frame.Method'> method_frame: The Basic.Cancel frame
     def on_consumer_cancelled(self, method_frame):
-        # RabbitMQ sent a Basic.Cancel for a consumer receiving messages
-        # <class 'pika.frame.Method'> method_frame: The Basic.Cancel frame
         self.logger.info('consumer was cancelled remotely, shutting down: %r', method_frame)
         if self._channel:
             self._channel.close()
-        # Is the consumer_tag now invalid? Let's assume so for now since we
-        # make use of this property to correlate Message Acknowledgements
         self._consumer_tag = None
+        self._consuming = False
         self.set_failed("consumer has been cancelled")
 
-    # this method is called immediately upon message arrival
-    def __on_message(self, _unused_channel, basic_deliver, properties, body):
-        # 'pika.spec.Basic.Deliver', properties'pika.spec.BasicProperties', 'bytes'
+    # Callback method for pika when a message has arrived
+    # 'pika.spec.Basic.Deliver' basic_deliver
+    # 'pika.spec.BasicProperties' properties:
+    # 'bytes' body
+    def _on_message(self, _unused_channel, basic_deliver, properties, body):
 
-        # do stats and health checks
         self.last_message_received_time = datetime.now()
-
-        try:
-            # prepare message for flight
-            message = AmqpMessage(pika_tuple=(basic_deliver, properties, body))
+        
+        basic_deliver.routing_key = remove_routing_key_prefix(
+            basic_deliver.routing_key,self._strip_routing_key_prefix)
+        
+        message = AmqpMessage(pika_tuple=(basic_deliver, properties, body))
             
-            # pass to abstract method
-            # check if a child class has this method present
-            if hasattr(self,"on_message"):
-                # child class has provided an on_message method
+        try:
+            wrote_message = False
+            # Determine where this message needs to go based on configuration
+            # Check for a derived child class method named on_message(..)
+            if hasattr(self,"on_message"):           
                 self.logger.debug("Received Message # %s -> self.on_message(..); routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
                 self.on_message(message)
+                wrote_message = True
+            
+            # Reference to a shared message Queue has been passed to the 
+            # constructor. This occurs when this consumer is attached to 
+            # a MessageProcessingPipeline among other use-cases
             elif self._received_messages_queue:
-                # class instance has been provided a message Queue
-                # This occurs when this AMQP client is attached to a Pipeline
                 self._received_messages_queue.put(message)
                 self.logger.debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
+            
+            # Callback method has been registered with us. This is untested
+            # and likely dangerous as the call will be coming from the ioloop
+            elif self._receive_message_callback:
+                self._receive_message_callback(message)
+            
             else:
-                self.logger.info("received message but not configured to do anything with it. Msg # %s; routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
-                return
+                self.logger.info("message received but neither an on_message(..) method or a message queue has been provided")
+            
 
         except Exception as e:
             self.logger.error(exceptionhandling.traceback_string(e))
 
-    # Calls channel
-    # Send Basic.Ack RPC to the channel to acknowledge message delivery
-    # Acknowledge message delivery by sending a Basic.Ack RPC method for 
-    # the delivery tag
-    # - Option for consumer_tag so we can prevent asynchronous processes 
-    # from confirming delivery of messages that may have been from a 
-    # different consumer session
+    # Acknowledge message delivery
+    # Send Basic.Ack RPC with the delivery to the channel 
+    # consumer_tag: optional check to ensure future ack requests match the
+    #  proper consumer session (eg. following a consumer reconnect)
+    #  delivery_tags are related to a particular consumer session only
     def ack_message(self, delivery_tag, multiple=False, consumer_tag=None):
-        
         if self.test_mode("amqp_nack_requeue_all_messages"):
             self.logger.info("ack was requested for delivery_tag=%s but test_mode(amqp_nack_requeue_all_messages) is enabled" % delivery_tag)
             self.nack_message(delivery_tag, consumer_tag=consumer_tag, multiple=False, requeue=True)
             return
-            
         if consumer_tag and consumer_tag != self._consumer_tag:
             self.logger.warning("ack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
         else:
@@ -251,14 +251,13 @@ class AsynchronousConsumer(AsynchronousClient):
             cb = functools.partial(self._channel.basic_nack, delivery_tag, multiple, requeue)
             self._connection.ioloop.add_callback_threadsafe(cb)
 
-    # Send Basic.Cancel RPC command to RabbitMQ
-    # this is only being called by the stop() method
-    # formerly stop_consuming
+    # Gracefully stop the Consumer
+    # Send Basic.Cancel RPC command to RabbitMQ and register callback method
+    # This method is only being called by the parent.stop() method
     def stop_activity(self):
-        self._closing = True
         if self._channel and hasattr(self,"_consumer_tag"):
             self.logger.debug('sending Basic.Cancel RPC command')
-            cb = functools.partial(self.on_cancelok, userdata=self._consumer_tag)
+            cb = functools.partial(self.on_cancel, userdata=self._consumer_tag)
             self._channel.basic_cancel(self._consumer_tag, cb)
             self._consumer_tag = None
         else:
@@ -268,9 +267,9 @@ class AsynchronousConsumer(AsynchronousClient):
     # Basic.CancelOk frame.
     # We will now close the channel, which will result in an
     # on_channel_closed callback and then we will close the connection
-    def on_cancelok(self, _unused_frame, userdata):
+    def on_cancel(self, _unused_frame, consumer_tag):
         self._consuming = False
-        self.logger.debug('RabbitMQ acknowledged the cancellation of the consumer: %s', userdata)
+        self.logger.debug('RabbitMQ acknowledged the cancellation of the consumer: %s', consumer_tag)
         if self._channel:
             self.close_channel()
         else: self.logger.debug("on_cancelok() going to close_channel() but already closed")
