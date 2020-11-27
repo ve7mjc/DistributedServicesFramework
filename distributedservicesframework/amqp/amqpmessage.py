@@ -1,7 +1,6 @@
 
 # for data type checks
 import pika.spec
-#import Basic.Deliver
 from pika.spec import BasicProperties, Basic
 
 class AmqpMessage():

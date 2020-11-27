@@ -1,9 +1,13 @@
-# distributedservicesframework :: amqp subpackage
-#
+# dsf_root/amqp/__init__.py
 
 # Bring Classes into scope of this package
-from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient
-from distributedservicesframework.amqp.asynchronousconsumer import AsynchronousConsumer
-from distributedservicesframework.amqp.asynchronousproducer import AsynchronousProducer
-from distributedservicesframework.amqp.amqpmessage import AmqpMessage
-from distributedservicesframework.amqp import amqputilities
+
+from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
+from dsf.amqp.asynchronousconsumer import AsynchronousConsumer
+from dsf.amqp.asynchronousproducer import AsynchronousProducer
+#from dsf.amqp.amqputilities import amqputilities
+from dsf.amqp.amqpmessage import AmqpMessage
+
+#from .amqpmessage import AmqpMessage
+
+# from .amqp import amqputilities

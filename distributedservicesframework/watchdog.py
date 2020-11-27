@@ -1,4 +1,4 @@
-from distributedservicesframework import utilities
+from dsf import utilities
 
 class Watchdog():
     

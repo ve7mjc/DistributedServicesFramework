@@ -22,3 +22,6 @@ class MessageAdapterStartupTimeout(Exception):
 # Message Adapter has claimed itself failed during startup
 class MessageAdapterStartupFailed(Exception):
     pass
+    
+class MessageAdapterStopTimeout(Exception):
+    pass

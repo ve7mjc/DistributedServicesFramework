@@ -7,14 +7,12 @@ import functools # callbacks
 from queue import Queue
 from pika import BasicProperties
 
-from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient, ClientType
-from distributedservicesframework.amqp.amqpmessage import AmqpMessage
+from dsf.amqp import AsynchronousClient, ClientType
 
 # Important Note on Thread Safety
 # self._connection.ioloop.start() runs in Thread::run()
 # this ioloop is blocking and as all interaction with this ioloop must be
 # done thread-safe by registering a thread-safe callback with the ioloop itself
-
 class AsynchronousProducer(AsynchronousClient):
   
     _client_type = ClientType.Producer
@@ -227,3 +225,14 @@ class AsynchronousProducer(AsynchronousClient):
         except Exception as e:
             self.logger.error("producer::publish() %s" % e)
             raise e
+
+    # Gracefully this producer
+    # This method is only called from the BaseClass.stop() method
+    # self._stop_requested is now true and so forcing the connection ioloop
+    # to close the channel will cause the BaseClass.run() method to exit
+    # This method IS being called from a threadsafe callback to ioloop!
+    def stop_activity(self):
+        
+        if self._channel.is_open: self._channel.close()
+        elif self._connection.is_open: self._connection.close()
+        

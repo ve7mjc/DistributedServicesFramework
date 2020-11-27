@@ -26,15 +26,13 @@ from datetime import datetime
 def utc_timestamp():
     return datetime.now().timestamp()
     
-    import sys
-
 # Measure memory size of object including its attributes
 # Performs self-recursive calls until is has "seen" all attributes of
 #  a class
 # Credit: Wissam Jarjoui
 # https://gist.github.com/bosswissam/a369b7a31d9dcab46b4a034be7d263b2#file-pysize-py
+import sys
 def get_size(obj, seen=None):
-    """Recursively finds size of objects"""
     size = sys.getsizeof(obj)
     if seen is None:
         seen = set()

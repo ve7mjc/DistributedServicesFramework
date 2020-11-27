@@ -6,22 +6,28 @@ import time
 from datetime import datetime
 import logging
 
-from distributedservicesframework.statistics import Statistics
-from distributedservicesframework.component import Component
-from distributedservicesframework import utilities, exceptionhandling
-from distributedservicesframework.watchdog import Watchdog
-
-# task scheduler
+from dsf.statistics import Statistics
+from dsf import utilities, exceptionhandling
+from dsf.watchdog import Watchdog
+from dsf.component import Component
 
 class Task():
     pass
 
-class ServiceMonitor(Component,Thread):
+# Intention to have a single Monitor instance per Service
+# Classes may obtain a handle to a Monitor, or interface through a MixIn Class
+# Monitor is Threaded and may remain asynchronous and able to monitor components
+#  from an isolated 
+class Monitor(Component,Thread):
 
     _watchdogs = []
     
     # list of tasks of type Dict; see register_periodict_task()
     _scheduled_tasks = []
+    
+    # let the Component base class know we will require special with start() 
+    # and stop() calls
+    _threaded = True
 
     def __init__(self, **kwargs):
 
@@ -29,7 +35,7 @@ class ServiceMonitor(Component,Thread):
         # bring the logging, name down
         Component.__init__(self, **kwargs)
 
-        # Thread competes for self_name!
+        # Thread competes for self._name!
         Thread.__init__(self)
         
         self.register_periodic_task(self.check_watchdogs,0.5,name="check_watchdogs")
@@ -119,4 +125,5 @@ class ServiceMonitor(Component,Thread):
 
     # redeclare method here to prevent Thread stop method from being called
     def stop(self, reason=None):
-        Component.stop(self,reason)
+        super().stop()
+        #Component.stop(self,reason)

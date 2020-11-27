@@ -1,13 +1,20 @@
-from distributedservicesframework.amqp.asynchronousconsumer import AsynchronousConsumer
-from distributedservicesframework.amqp.asynchronousproducer import AsynchronousProducer
-from distributedservicesframework.amqp import amqputilities
-from distributedservicesframework.amqp.amqpmessage import AmqpMessage
+from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
+from dsf.component import Component
+from dsf import exceptionhandling
 
-from distributedservicesframework.component import Component
+import threading
 
 # Abstract Message Input and Output Adapters
 # We are choosing to leave the Component base class out of Adapter for now as
 # it is present in the data adapters so far
+
+# start()
+# stop()
+# keep_working - shut down was issued
+# is_stopped() - adapter is stopped
+# @properties
+# adapter_type - return descriptive short name, eg: AmqpConsumer
+# direction - "in" or "out"
 
 # abstract class
 class MessageAdapter(): # Component
@@ -15,24 +22,26 @@ class MessageAdapter(): # Component
     # ability for a data adapter to arbitrarily throttle the rate of
     # message flow.
     _throttle_messages_sec = None
-    _type = None # declare in child class; eg. FileWriter
+    _adapter_type = None # declare in child class; eg. FileWriter
     
     def __init__(self,**kwargs):
         self._throttle_messages_sec = kwargs.get("throttle",None)
         super().__init__(**kwargs)
     
+    # "in" or "out"
     @property
-    def message_direction(self):
+    def direction(self):
         return self._message_direction
     
-    # Return type of MessageAdapter, eg. FileWriter
+    # Return type of MessageAdapter, eg. FileWriter, AmqpConsumer
     @property
-    def type(self):
-        return self._type
-
+    def adapter_type(self):
+        return self._adapter_type
+    
 # abstract class
 class MessageInputAdapter(MessageAdapter):
     
+    _adapter_type = "GenericInput"
     _message_direction = "in"
     
     def __init__(self,**kwargs):
@@ -41,7 +50,7 @@ class MessageInputAdapter(MessageAdapter):
 # Double check MRO concept here!
 class MessageInputAdapterAmqpConsumer(AsynchronousConsumer,MessageInputAdapter):
     
-    _type = "AMQPConsumer"
+    _adapter_type = "AMQPConsumer"
     
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -55,6 +64,7 @@ class MessageInputAdapterAmqpConsumer(AsynchronousConsumer,MessageInputAdapter):
 
 class MessageOutputAdapter(MessageAdapter):
     
+    _adapter_type = "GenericOutput"
     _message_direction = "out"
     
     def __init__(self,**kwargs):
@@ -64,17 +74,50 @@ class MessageOutputAdapter(MessageAdapter):
     def write(self, message):
         raise Exception("write not implemented in MessageOutputAdapter child class!")
 
+class SimulatedMessageInputAdapter(threading.Thread,Component):
+    
+    _adapter_type = "SimulatedMessageInput"
+    
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        
+    def do_run(self):
+        while self.keep_working:
+            pass
+            
+
+class MessageOutputAdapterAmqpProducer(AsynchronousProducer,MessageOutputAdapter):
+    
+    _adapter_type = "AmqpProducer"
+    
+    _publish_exchange = "test"
+    _publish_routing_key = None
+    _blocking = True
+    
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        
+    def write(self, message):
+        kwargs = {}
+        kwargs["blocking"] = self._blocking
+        kwargs["exchange"] = self._publish_exchange
+        kwargs["routing_key"] = "test"
+        kwargs["body"] = message
+        # properties
+        self.publish(**kwargs)
+
 # Message --> Console Writer
 # blocking? we can consider the console stream rate to be insignificant
 # fairly sure it is non-blocking anyways -- eg write to a buffer and flush
 class MessageOutputAdapterConsoleWriter(MessageOutputAdapter,Component):
     
-    _type = "ConsoleWriter"
-    
+    _adapter_type = "ConsoleWriter"
+
     def __init__(self,**kwargs):      
         # Component, then MessageOutputAdapter
         super().__init__(**kwargs)
         
     def write(self,message):
         print("ConsoleWriter: %s" % message)
+    
     

@@ -6,10 +6,10 @@ from pika.exceptions import ChannelWrongStateError
 import functools # callbacks
 from datetime import datetime
 
-from distributedservicesframework import utilities, exceptionhandling
-from distributedservicesframework.amqp.asynchronousclient import AsynchronousClient, ClientType
-from distributedservicesframework.amqp.amqpmessage import AmqpMessage
-from distributedservicesframework.amqp.amqputilities import *
+from dsf import utilities, exceptionhandling
+from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
+from dsf.amqp import amqputilities
+from dsf.amqp.amqpmessage import AmqpMessage
 
 # todo, if channel is closed on connect - it will not quit nicely (hangs)
 #2020-11-16 00:12:53,062 pika.channel WARNING Received remote Channel.Close (404): "NOT_FOUND - no queue 'weather_test' in vhost '/'" on <Channel number=1 OPEN conn=<SelectConnection OPEN transport=<pika.adapters.utils.io_services_utils._AsyncPlaintextTransport object at 0x7f0c659fcc10> params=<ConnectionParameters host=localhost port=5672 virtual_host=/ ssl=False>>>
@@ -131,8 +131,8 @@ class AsynchronousConsumer(AsynchronousClient):
     #   Provide callback for received messages
     #   Returns the unique RabbitMQ consumer tag
     def start_consuming(self):
-        self.logger.debug("sending Basic.Cancel callback request")
-        self._channel.add_on_cancel_callback(self.on_consumer_cancelled)
+        self.logger.debug("sending Basic.Cancel with callback request")
+        self._channel.add_on_cancel_callback(self.on_consumer_cancelled_remote)
         self._consumer_tag = self._channel.basic_consume(
             self._queue, self._on_message, auto_ack=False)
         self._consuming = True
@@ -145,16 +145,33 @@ class AsynchronousConsumer(AsynchronousClient):
     @property
     def consumer_tag(self):
         return self._consumer_tag
-        
-    # RabbitMQ sent a Basic.Cancel for a consumer receiving messages
-    # <class 'pika.frame.Method'> method_frame: The Basic.Cancel frame
-    def on_consumer_cancelled(self, method_frame):
-        self.logger.info('consumer was cancelled remotely, shutting down: %r', method_frame)
-        if self._channel:
-            self._channel.close()
+
+    # RabbitMQ has acknowledged cancellation of the consumer with a
+    # Basic.CancelOk frame
+    # We will now close the channel, which will result in an
+    # on_channel_closed callback and then we will close the connection
+    def on_consumer_cancelled_ok(self, _unused_frame, consumer_tag):
         self._consumer_tag = None
         self._consuming = False
-        self.set_failed("consumer has been cancelled")
+        
+        self.logger.debug('RabbitMQ acknowledged the cancellation of consumer with tag %s', consumer_tag)
+        
+        if self._channel.is_open: self._channel.close()
+        elif self._connection.is_open: self._connection.close()
+
+    # Consumer has been cancelled by remote server
+    # RabbitMQ sent a Basic.Cancel for a consumer receiving messages
+    # <class 'pika.frame.Method'> method_frame: The Basic.Cancel frame
+    def on_consumer_cancelled_remote(self, method_frame):
+        self._consumer_tag = None
+        self._consuming = False
+        
+        self.logger.info('consumer was cancelled remotely, shutting down: %r', method_frame)
+        
+        if self._channel.is_open: self._channel.close()
+        elif self._connection.is_open: self._connection.close()
+
+        self.set_failed("consumer has been cancelled by remote server")
 
     # Callback method for pika when a message has arrived
     # 'pika.spec.Basic.Deliver' basic_deliver
@@ -164,7 +181,7 @@ class AsynchronousConsumer(AsynchronousClient):
 
         self.last_message_received_time = datetime.now()
         
-        basic_deliver.routing_key = remove_routing_key_prefix(
+        basic_deliver.routing_key = amqputilities.remove_routing_key_prefix(
             basic_deliver.routing_key,self._strip_routing_key_prefix)
         
         message = AmqpMessage(pika_tuple=(basic_deliver, properties, body))
@@ -254,22 +271,21 @@ class AsynchronousConsumer(AsynchronousClient):
     # Gracefully stop the Consumer
     # Send Basic.Cancel RPC command to RabbitMQ and register callback method
     # This method is only being called by the parent.stop() method
+    # Make sure all calls are thread-safe since this was called from another 
+    #  Thread and must manipulate the ioloop
     def stop_activity(self):
-        if self._channel and hasattr(self,"_consumer_tag"):
-            self.logger.debug('sending Basic.Cancel RPC command')
-            cb = functools.partial(self.on_cancel, userdata=self._consumer_tag)
+        # Cover a few different scenarios so we keep the noise down and
+        # ensure we get a clean exit
+        if self._consuming:
+            self.logger.debug('stopping consuming; sending Basic.Cancel RPC command')
+            cb = functools.partial(self.on_consumer_cancelled_ok, userdata=self._consumer_tag)
             self._channel.basic_cancel(self._consumer_tag, cb)
-            self._consumer_tag = None
+        elif self._channel.is_open:
+            # on_channel_close will be called after this where we will then
+            #  shut down the connection
+            self._connection.ioloop.add_callback_threadsafe(self.close_channel())
         else:
-            self.close_channel()
+            # This scenario sees only the connection open. No consumer or channel.
+            if self._connection.is_open:
+                self._connection.ioloop.add_callback_threadsafe(self._connection.close())
 
-    # RabbitMQ has acknowledged cancellation of the consumer with a
-    # Basic.CancelOk frame.
-    # We will now close the channel, which will result in an
-    # on_channel_closed callback and then we will close the connection
-    def on_cancel(self, _unused_frame, consumer_tag):
-        self._consuming = False
-        self.logger.debug('RabbitMQ acknowledged the cancellation of the consumer: %s', consumer_tag)
-        if self._channel:
-            self.close_channel()
-        else: self.logger.debug("on_cancelok() going to close_channel() but already closed")

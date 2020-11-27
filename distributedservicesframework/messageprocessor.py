@@ -1,4 +1,4 @@
-from distributedservicesframework.component import Component
+from dsf.component import Component
 
 class MessageProcessorException(Exception):
     pass

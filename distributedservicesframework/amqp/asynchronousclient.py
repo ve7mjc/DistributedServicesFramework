@@ -25,7 +25,7 @@ from pprint import pprint
 # with the ioloop itself
 
 #from distributedservicesframework.statistics import Statistics
-from distributedservicesframework.component import Component
+from dsf.services import Component
 
 class ClientType(Enum):
     Unspecified = 0,
@@ -73,6 +73,10 @@ class AsynchronousClient(Component,Thread):
     # outgoing, non-blocking publish with asynchronous ack
     # incoming messages
     #message_queue = Queue()
+    
+    # let the Component base class know we will require special with start() 
+    # and stop() calls
+    _threaded = True
 
     def __init__(self, **kwargs):
 
@@ -147,31 +151,6 @@ class AsynchronousClient(Component,Thread):
                     on_open_error_callback=self.on_connection_open_error,
                     on_close_callback=self.on_connection_closed)
 
-    # Close the RabbitMQ connection
-    def close_connection(self):
-        self.logger.debug('closing connection')
-        self._connection.close()
-
-    # Callback Method called from pika connection when connection is closed
-    # param pika.connection.Connection connection: The closed connection obj
-    # param Exception reason: exception representing reason for loss of
-    #    connection.
-    def on_connection_closed(self, connection, reason):
-        # this connection closing was unexpected - stop() was not called
-        if self.keep_working:
-            self.logger.warning('Connection closed: %s', reason)
-        # the ioloop stays in play despite losing the connection so we need to force
-        # it to exit so we can move on with code execution in self::run()
-        self._connection.ioloop.stop()
-
-    # AMQP Client is read.
-    # Connection and Channel are established and open
-    # Exchanges, Queues, and Bindings are declared
-    # QoS (Prefetch) is completed
-    def _client_ready(self):
-        self._reconnect_attempts = 0 # reset
-        self.client_ready()
-
     # Callback method called by pika once the RabbitMQ connection has
     # been established.
     # Passes pika.SelectConnection handle which we should already have
@@ -219,20 +198,30 @@ class AsynchronousClient(Component,Thread):
         # it to exit so we can move on with code execution in self::run()
         self._connection.ioloop.stop()
 
-    # Cleanly close RabbitMQ channel
-    # Send Channel.Close RPC command. Callback is already registered.
-    def close_channel(self):
-        self.logger.debug('Closing the channel')
-        self._channel.close()
+    # Close the RabbitMQ connection
+    def close_connection(self):
+        self.logger.debug('closing connection')
+        self._connection.close()
 
-    # Method to allow us to specify a binding request prior to connection
-    # which will be performed on connect and every reconnect
-    def add_binding(self, queue, exchange, routing_key):
-        binding = {}
-        binding['queue'] = queue
-        binding['exchange'] = exchange
-        binding['routing_key'] = routing_key
-        self._bindings.append(binding)
+    # Callback Method called from pika connection when connection is closed
+    # param pika.connection.Connection connection: The closed connection obj
+    # param Exception reason: exception representing reason for loss of
+    #    connection.
+    def on_connection_closed(self, connection, reason):
+        # this connection closing was unexpected - stop() was not called
+        if self.keep_working:
+            self.logger.warning('Connection closed: %s', reason)
+        # the ioloop stays in play despite losing the connection so we need to force
+        # it to exit so we can move on with code execution in self::run()
+        self._connection.ioloop.stop()
+
+    # AMQP Client is read.
+    # Connection and Channel are established and open
+    # Exchanges, Queues, and Bindings are declared
+    # QoS (Prefetch) is completed
+    def _client_ready(self):
+        self._reconnect_attempts = 0 # reset
+        self.client_ready()
 
     # Callback method RabbitMQ calls when a channel has been opened
     # Passes ika.channel.Channel handle
@@ -242,7 +231,7 @@ class AsynchronousClient(Component,Thread):
         self._channel = channel
         self._channel.add_on_close_callback(self.on_channel_closed)
         self.setup_exchange(self._exchange)
-
+        
     # Callback method called by RabbitMQ when a channel has been closed
     # Channels are closed any time a request has violated a protocol
     # TODO: Make sure we do not get into a reconnect flood here as we are 
@@ -252,8 +241,23 @@ class AsynchronousClient(Component,Thread):
         if self.keep_working:
             self.logger.warning('Channel was closed unexpectedly: %s' % reason)
         
-        # 25 Nov 2020 - removing this as it is causing problems
-        #self.close_connection()
+        # a consumer 
+        if self._connection.is_open: self._connection.close()
+
+    # Cleanly close RabbitMQ channel
+    # Send Channel.Close RPC command. Callback is already registered.
+    def close_channel(self):
+        self.logger.debug('Closing the channel')
+        if self._channel.is_open: self._channel.close()
+
+    # Method to allow us to specify a binding request prior to connection
+    # which will be performed on connect and every reconnect
+    def add_binding(self, queue, exchange, routing_key):
+        binding = {}
+        binding['queue'] = queue
+        binding['exchange'] = exchange
+        binding['routing_key'] = routing_key
+        self._bindings.append(binding)
 
     # Setup exchange on RabbitMQ
     # Send the Exchange.Declare RPC command with a callback method for pika
@@ -423,11 +427,12 @@ class AsynchronousClient(Component,Thread):
             
             # block here until released
             self._connection.ioloop.start()
-            
+
             # We have disconnected
             # Was this requested, and if not, is automatic reconnect enabled?
             # Otherwise, we must repeat this loop immediately the first time
             # and then increase our loop delay on subsequent reconect attempts
+            # FANCY DELAY BLOCK!
             if self.keep_working and self._automatic_reconnect:
                 
                 self.set_failed("connection failed")
@@ -457,16 +462,12 @@ class AsynchronousClient(Component,Thread):
             # Connection has disconnected but automatic reconnect is disabled
             # Not sure who would be crazy enough to roll this way
             if not self._automatic_reconnect and self.keep_working:
+                self.set_failed("connection failed; auto reconnect is disabled")
                 self.stop("connection failed")
                 break
 
         # we have completed work in this method
-        self.logger.debug('AsynchronousAmqpClient.do_run() work done is done; thread exiting..')
-
-    # reimplement me!
-    def stop_activity(self):
-        if self._channel:
-            self.close_channel()
+        self.logger.debug('thread exiting')
 
     # call this method if you would like to gracefully shut down the consumer
     # this will result in the thread exiting once the ioloop has completed
@@ -477,5 +478,16 @@ class AsynchronousClient(Component,Thread):
         # with the ioloop and must instead register a callback request
         # self._connection is None before and after connection and when connected
         # <class 'pika.adapters.select_connection.SelectConnection'>
-        if self._connection:
-            self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
+        # If a child class has defined a stop_activity, we will pass execution
+        #  there for a graceful shutdown, otherwise try closing the channel and
+        #  then connection
+        if hasattr(self,"stop_activity"):
+            if self._connection:
+                self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
+        else:
+            # follow this path so that we may hook callbacks to continue the shutdown
+            #  if we happen to be stuck between a stage somehow
+            if self._channel and self._channel.is_open:
+                self._connection.ioloop.add_callback_threadsafe(self._channel.close())
+            elif self._connection and self._connection.is_open:
+                self._connection.ioloop.add_callback_threadsafe(self._connection.close())

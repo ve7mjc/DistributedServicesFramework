@@ -18,16 +18,27 @@
 # - Interface to application System Monitor and Watchdog
 #
 
-from distributedservicesframework.statistics import Statistics
+# Component.start(**kwargs)
+# Component.stop(reason=None)
+# Component.is_stopped()
+# Component.is_ready()
+# ._name - Set name of this component in child class
+# 
 
+from enum import Enum
 from datetime import datetime
+
 import logging
+from sys import stdout
 
 # Multiple Inheritance Notes
 # class FooBar(Foo, Bar):
 #  super will call base classes from right to left
 #  super().__init__() - this calls all constructors up to Foo (aka all)
 #  super(Foo, self).__init__(bar) - call all constructors after Foo up to Bar
+
+from threading import Thread
+from time import sleep, perf_counter
 
 # Features:
 # Test Mode functionality to support convenient and reliable fine-grained 
@@ -54,7 +65,18 @@ class Component():
     # TODO: Mutex Lock
     _stop_requested = False
     
+    _logger = None
     _loglevel = None
+    _prelogger_log_messages = None
+    
+    # Start and Stop Operation
+    #  Designate how the class.stop(), class.is_stopped(), 
+    #  class.keep_running and other aspects behave with this 
+    #  implementation. 
+    # See StartMode and StopMode enum classdefs for more information
+    _threaded = False
+    _start_required = False
+    _stop_required = False
     
     def __init__(self, **kwargs):
 
@@ -65,37 +87,18 @@ class Component():
         if not hasattr(self, "_name"):
             self._name = self.__class__.__name__.lower()
 
-        # deprecated. phase out _module_name in favor of __name
-        if hasattr(self,"_module_name"):
-            self._name = self._module_name
-
         if "loglevel" in kwargs: self._loglevel = kwargs.get("loglevel")
-
-        # Logger - Do not override logging it if has been configured
-        # prior to this constructor.
-        if not hasattr(self,"_logger"):
-            
-            # Just the logger name - it is important
-            if "logger_name" in kwargs:
-                self._logger_name = kwargs.get("logger_name")
-            elif hasattr(self,"_logger_name") and self._logger_name is not None:
-                pass # happy, we are.
-            elif hasattr(self,"_name") and self._name is not None:
-                self._logger_name = self._name
-            else:
-                self._logger_name = type(self).__name__.lower()
-            
-            self._logger = logging.getLogger(self._logger_name)
-            if not self._loglevel: self._loglevel = logging.WARNING
-            self.logger.setLevel(self._loglevel)
         
-        # create a class instance if one does not exist
-        if not self._statistics:
-            self._statistics = Statistics(component_name=self.name)
+        self._logger = self.get_logger()
         
-        # bestow super powers to this class so it may participate in 
-        # multiple-inheritance greatness
         super().__init__()
+
+        # Set our status to ready if not Threaded and do not require start() 
+        # to be called
+        if not self._threaded and not self._start_required:
+            self._ready = True
+
+        self._pre_logger_log_messages()
             
     @property
     def name(self): return self._name
@@ -125,11 +128,125 @@ class Component():
         self._failed = True
         self._failed_reason = failure_reason
         self.stop("failure: %s" % failure_reason)
+
+    # Obtain a handle to the logging module root logger
+    # Remove any unexpected handlers which may be present
+    # Attach a StreamHandler (console) and FileHanlder (log files)
+    # We do not need to maintain a handle to the root logger as it can be
+    #  obtained at any time through a global module-level method
+    def configure_root_logger(self):
         
+        # Many logging method calls will attempt to automatically configure 
+        #  loggers which have not been configured (no handlers, etc)
+        # .getLogger does not cause the logger to configure
+        root_logger = logging.getLogger()
+        
+        # Some libraries add handler(s) to the root logger during their import
+        #  for various reasons including squelching warnings but most 
+        #  importantly before we even establish logging (looking at you pika!)
+        # Remove any attached handlers so we may impose our ways upon it
+        while root_logger.hasHandlers():
+            root_logger.removeHandler(logger.handlers[0])
+
+        # Add a StreamHandler attached to stdout
+        # StreamHandler appears to default to writing output to STDERR 
+        # so we pass sys.stdout 
+        root_stream_handler = logging.StreamHandler(stdout)
+        root_logger.addHandler(root_stream_handler)
+        
+        # make sure that all children of the root logger will have a formatted {app_name}.{module_name}
+        root_logger_formatting = '%(asctime)s %(name)s %(levelname)s %(message)s'
+        #root_logger_formatting = '%(asctime)s ' + self.name + '.%(name)s %(levelname)s %(message)s'
+        formatter = logging.Formatter(root_logger_formatting)
+        root_stream_handler.setFormatter(formatter)
+        
+        # File Handler
+        file_handler = logging.FileHandler('%s.log' % self.name.replace(" ", "_"))
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        
+        # By default the root logger is set to WARNING and all loggers you define
+        #  appear to inherit that value if they are loglevel.NOTSET
+        # Here we are setting the loglevel of the root logger
+        root_logger.setLevel(logging.WARNING)
+        
+    # Convenience method to point us to class logger instance while also
+    #  permitting features such as enqueing a log message prior to logger 
+    #  creation
+    def log(self,level,msg,*args,**kwargs):
+        if not isinstance(msg, str): msg = str(msg)
+        if kwargs.get("squashlines",None):
+            msg = msg.replace("\r", "").replace("\n", "")
+            del kwargs["squashlines"]
+        if self._logger:
+            self._logger.log(level,msg,*args,**kwargs)
+        else:
+            log_message = (level,msg,args,kwargs)
+            if not self._prelogger_log_messages: 
+                self._prelogger_log_messages = []
+            self._prelogger_log_messages.append(log_message)
+
+    def log_error(self,msg,*args,**kwargs):
+        self.log(logging.ERROR,msg,*args,**kwargs)
+    def log_warning(self,msg,*args,**kwargs):
+        self.log(logging.WARNING,msg,*args,**kwargs)
+    def log_info(self,msg,*args,**kwargs):
+        self.log(logging.INFO,msg,*args,**kwargs)
+    def log_debug(self,msg,*args,**kwargs):
+        self.log(logging.DEBUG,msg,*args,**kwargs)
+        
+    def log_exception(self,exception):
+        etype = type(exception).__name__
+        if hasattr(exception,"__str__"):
+            message = exception.__str__()
+        msg = "%s: %s" % (etype,message)
+        self.log_error(msg,squashlines=True)
+
+    # Dump enqueued log messages to logger
+    # Create logger instance if necessary
+    def _pre_logger_log_messages(self):
+        # Create a root logger if we do not have a logger
+        logger = getattr(self,"_logger",None)
+        if not logger: logger = logging.getLogger()
+        if self._prelogger_log_messages:
+            for log_msg in self._prelogger_log_messages:
+                level,msg,args,kwargs = log_msg
+                logger.log(level,msg,*args,**kwargs)
+        
+    def get_logger(self,name=None):
+        # Configure a logger for this class instance
+        # default to useing the name of the lowercase class instance name (name of child class)
+        # if it is not specified
+        # The arduous process of selecting a name for our little logger. 
+        # In order of preference. Subject to change.
+#        if __self__ == self:
+#            print("called from self !!!")
+##            if "logger_name" in kwargs:
+##                name = kwargs.get("logger_name")
+#            if hasattr(self,"_logger_name") and self._logger_name:
+#                name = self._logger_name
+#            elif hasattr(self,"_name") and self._nameNone:
+#                name = self._name
+#            else: name = type(self).__name__.lower()
+        
+        return logging.getLogger(name)
+        
+#    # attempt to determine a suitable logger name for a passed
+#    #  object
+#    def get_logger_name_module(self,instance):
+#        if "logger_name" in kwargs:
+#            logger_name = kwargs.get("logger_name")
+#        elif hasattr(self,"_logger_name") and self._logger_name is not None:
+#            logger_name = self._logger_name
+#        elif hasattr(self,"_name") and self._name is not None:
+#            self._logger_name = self._name
+#        else:
+#            self._logger_name = type(self).__name__.lower()
+    
     @property
     def logger(self):
         return self._logger
-        
+
     def set_name(self, name):
         self._name = name
     
@@ -158,17 +275,42 @@ class Component():
                 # todo - beef this up
         else:
             self.logger.warning("%s.run() has been called. Make sure this class has a do_run() method defined" % type(self).__name__)
-            
-        # set this True so calls to Child::stopped() will return True
-        # This method is likely called from a Thread::start() call and the 
-        # do_run() child method has exited and thus work is stopped
-        self._stop_requested = True
+
+        # @property.is_stopped() will be True now
+        self._ready = False
 
     # convenience method to reverse logic and make flow logic more clear
     # Returns true if a shutdown has not been requested
     @property
     def keep_working(self): 
         return not self._stop_requested
+    
+    # duration_ms - how long in ms to block for. Values >= 100 result in 
+    #   the the use of system clock elapsed time to increase the accuracy
+    #   uses time.perf_counter() in Python >= 3.3 performance counter, i.e. a 
+    #   clock with the highest available resolution
+    # check_interval - the longest time we may go without checking for a releas
+    # Precision: Generally accepted that Linux ~ 1 msec and Windows ~ 16 msec
+    def releasable_sleep_ms(self,duration_ms=0,checkintervalms=5,high_accuracy=False):
+        # opportunity to optimize this method and reduce calls to system time
+        # based on how far away from the target we may be
+        watchvar = self.keep_working
+        if duration_ms >= 100 or high_accuracy:
+            for i in range(floor(checkintervalms/duration_ms)):
+                if not watchvar: return
+                sleep(checkintervalms / 1000)
+            sleep((checkintervalms % duration_ms) / 1000)
+            return
+            
+        # high accuracy version with remainder
+        start_time_secs = perf_counter()
+        while watchvar:
+            elapsed_time = perf_counter() - start_time_secs
+            if elapsed_time >= (duration_ms - checkintervalms) / 1000:
+                sleep((duration_ms % checkintervalms) / 1000)
+                break
+            sleep(checkintervalms / 1000)
+        return
 
     # set the logging level of a logger by name or if only one argument
     # supplied, apply to this instance logger!
@@ -206,33 +348,32 @@ class Component():
 
     # present a start method so we may be called similar to a class which 
     # extends a Thread
-    def start(self,**kwargs):        
-        if hasattr(super(),"start"):     
-            # pass this call to a parent if it exists (eg. a Thread)
+    # OVERRIDING - Call this method via super().start(**kwargs) last!
+    def start(self,**kwargs):
+        if self._threaded and hasattr(super(),"start"):
             super().start(**kwargs)
         else:
-            # if we have not provided a start() method in our child class
-            # then we do not have a startup process
-            self._ready = True            
+            self._ready = True
 
-    # Thread() has no official stop or shutdown method - the thread finishes
-    # when the Thread::run() method returns and thus we must implement our own
-    # control logic
-    # Overriding this method: subclasses should call this method first
+    # Thread has no stop or shutdown method - instead we set a class variable
+    #  self._stop_requested which the threaded run() method will check and stop
+    #  at some point after
+    # OVERRIDING this method: Subclasses should call this method first!
     def stop(self, reason=None):
         self._stop_requested = True
         stop_reason_message = "stop requested"
         if reason: stop_reason_message += ": %s" % reason
-        self.logger.info(stop_reason_message)
+        self.log_info(stop_reason_message)
 
-    # Provide a stopped property so we may query the status of this component
-    # after have requested it stop through the stop() method.
-    # Most importantly we want to be able to query a Thread status with 
-    # Thread::is_alive() but unless we in a subclass which extends a Thread
-    # then we will not have this method. Instead return the _stop_requested()
-    # status unless we provide an override in a subclass
-    @property
-    def stopped(self):
-        if hasattr(self,"is_alive"):
+        if not self._threaded and not self._stop_required:
+            self._ready = False
+
+    # is_stopped() method - Return True if this class instance has reported
+    #  to be stopped.
+    # In the case of Threaded working, it means the run loop has exited
+    # Returns True immediately after stop() returns from being called when the 
+    #  StopMode of this class is set to STOP_NOT_REQUIRED or STOP_CALL_REQUIRED
+    def is_stopped(self):
+        if self._threaded and hasattr(self,"is_alive"):
             return self.is_alive()
-        else: return self._stop_requested
+        return not self._ready() # invert

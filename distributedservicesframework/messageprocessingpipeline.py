@@ -26,19 +26,18 @@
 # to a 
 # Consumer (Source) Consumer Channel Message Ack
 # The Distributed Services Framework was developed specially for this project
-from distributedservicesframework.service import Service
-from distributedservicesframework import exceptionhandling, utilities
-from distributedservicesframework.amqp import amqputilities
-from distributedservicesframework.amqp.amqpmessage import AmqpMessage
-from distributedservicesframework.exceptions import *
-from distributedservicesframework.messageprocessor import MessageProcessor # for subclass checks
-from distributedservicesframework.dataadapters import *
 
 from queue import Queue, Empty
 import time # for sleep and sleep only, zzz
 import importlib # dynamic library loading
 
-# Stay asyncronous; Stay thread-safe!
+from dsf.services import Service
+from dsf.messageadapters import *
+from dsf.exceptions import *
+from dsf.messageprocessor import MessageProcessor
+from dsf import exceptionhandling, utilities
+
+# Stay asyncronous; Stay frosty
 class MessageProcessingPipeline(Service):
 
     # messages from consumers will be placed here to be picked
@@ -59,7 +58,8 @@ class MessageProcessingPipeline(Service):
     # dict of message processors
     _message_processors = {}
     
-    def __init__(self, **kwargs):        
+    def __init__(self, **kwargs):
+        
         # get logger, service monitor, name, etc
         super().__init__(**kwargs)
 
@@ -195,77 +195,9 @@ class MessageProcessingPipeline(Service):
             time.sleep(0.01) # test for impact without
         
         # we are timed out if we reached this code
-        self.logger.error("%s adapter(s) have timed out during startup" % (len(adapters)-adapters_ready))
+        self.log_error("%s adapter(s) have timed out during startup" % (len(adapters)-adapters_ready))
         raise MessageAdapterStartupTimeout("%s adapter(s)" % (len(adapters)-adapters_ready))
 
-#        # fickly maneuvres to be flexible in what the adapters list type
-#        # may be passed in: a single adapter, a list of adapters, or or a list 
-#        # of a list of adapters which will be common
-#        if not adapters_list_list: adapters_list_list = [self._amqp_producers,self._amqp_consumers]
-#        if not isinstance(adapters_list_list,list): 
-#            # if we happened to pass a single adapter - place it in a list of list
-#            adapters_list_list = [[adapters_lists]]
-#        if len(adapters_list_list) and not isinstance(adapters_list_list[0],list): 
-#            # if we are simply a list of adapters, make into a list of list
-#            adapters_list_list = [adapters_list_list]
-#
-#        # Start the adapters - adapters
-#        total_adapters_started = 0
-#        adapters_started = {}
-#        for adapters_list in adapters_list_list:
-#            adapter_type = type(adapters_list[0]).__name__.split(".")[-1]
-#            adapters_started[adapter_type] = 0
-#            #print(dir(type(adapters_list[0])))
-#            num_started = 0
-#            for adapter in adapters_list:
-#                # type(adapter)
-#                # <class 'distributedservicesframework.amqp.asynchronousproducer.AsynchronousProducer'>
-#                adapter.start()
-#                num_started += 1
-#                
-#            total_adapters_started += num_started
-#            adapters_started[adapter_type] = num_started
-#
-#        # Return now if we were called non-blocking (default)
-#        if not blocking:
-#            for adapter_type in adapters_started:
-#                self.logger.debug("Started %s adapters of type %s" % (adapters_started[adapter_type],adapter_type))
-#            return
-#        
-#        # Check the adapters
-#        # block until all clients in all supplied adapters lists are ready or
-#        # timeout - whichever comes first
-#        started_timestamp = utilities.utc_timestamp()
-#        total_adapters_ready = 0
-#        
-#        while (utilities.utc_timestamp()-started_timestamp) < ready_timeout_secs:
-#        
-#            # time constrained loop through all adapters in all of the 
-#            # lists until number ready matches number started
-#            adapters_ready = 0
-#            
-#            for adapters_list in adapters_list_list:
-#                #adapters_ready = 0 # adapters type is ?
-#                # apapters is now a list of one particular type of adapter
-#                for adapter in adapters_list:
-#                    if adapter.is_ready(): adapters_ready += 1
-#                    if adapter.is_failed():
-#                        adapter_type = type(adapter).__name__.split(".")[-1]
-#                        raise MessageInputAdapterFailedStartup(adapter_type)
-#
-#            # we have met our target of number of adapters started!
-#            if adapters_ready == total_adapters_started:
-#                for adapter_type in adapters_started:
-#                    self.logger.info("%s %s adapter(s) ready!"
-#                        % (adapters_started[adapter_type],adapter_type))
-#                return total_adapters_ready
-#            
-#            time.sleep(0.01) # 10 ms of sanity
-#        
-#        # timed out and (adapters_ready < adapters_started)
-#        raise MessageInputAdapterStartupTimeout()
-
-        
     # Request all MessageAdapters(Component) stop()
     # If blocking=True, we will block in this method until all of the adapters 
     # report they have been stopped or we have timed out - whichever is first
@@ -273,30 +205,42 @@ class MessageProcessingPipeline(Service):
     #  which provides stop() and @property.stopped
     def stop_message_adapters(self,blocking=True):
         
-        self.logger.debug("Stopping %s Message Input Adapters(s) and %s Message Output Adapters(s)" 
+        self.logger.debug("requesting %s Message Input Adapters(s) and %s Message Output Adapters(s) stop" 
             % (len(self._input_adapters), len(self._output_adapters)))
         
         adapters = self._input_adapters + self._output_adapters
         for adapter in adapters:
             if hasattr(adapter,"stop"): adapter.stop()
-            else: self.logger.warning("adapter %s does not have a stop() method!" % type(adapter).__name__)
+            else: self.logger.warning("uh-oh! adapter %s does not have a stop() method!" % type(adapter).__name__)
         
-        if not blocking: return False
+        if not blocking: return len(adapters)
         
         started_timestamp = utilities.utc_timestamp()
         while (utilities.utc_timestamp()-started_timestamp) < 3:
+            
             # if adapter is threaded?
             num_adapters_stopped = 0
             for adapter in adapters:
-                if not adapter.stopped:
+                if adapter.is_stopped():
+                    num_adapters_stopped += 1
+                else:
                     # do not be tempted to call join() without a timeout
                     # as we could be stuck here forever - instead we could
                     # escalate to a more forceful thread kill if we timeout
                     time.sleep(0.001)
-                num_adapters_stopped += 1
+                
             if num_adapters_stopped == len(adapters):
-                self.logger.debug("all (%s) adapters have stopped!" % num_adapters_stopped)
-                return False
+                self.logger.info("all %s adapter(s) are stopped" % num_adapters_stopped)
+                return num_adapters_stopped
+
+        # Time out. Build a better log message indicating which adapters have 
+        # timed out
+        timedout_adapters_string = ""
+        for adapter in adapters:
+            if not adapter.is_stopped():
+                timedout_adapters_string = "%s, %s" % (adapter.adapter_type, timedout_adapters_string)
+        
+        raise MessageAdapterStopTimeout("Timed out waiting for %s adapter(s) to stop: %s" % (len(adapters)-num_adapters_stopped,timedout_adapters_string))
 
 
     # pass keyword arguments straight in to message_type dict
@@ -381,15 +325,18 @@ class MessageProcessingPipeline(Service):
         return True
 
     def write_message_out(self,message):
-        self.message_output_adapters[0].write(message)
+        for adapter in self.message_output_adapters:
+            adapter.write(message)
 
-    # Retrieve a message from input message queue, 
-    # process message against subclass methods, and
-    # push result to output message queue
-    def _do_message_processing(self):
-        try: # except queue.Empty, (unexpected) Exception
-            
-            input_message = self._input_message_queue.get(block=True, timeout=0.01)
+    # THREADED WORK METHOD
+    # Do a single message in, process, and message out
+    # Called from while.keep_working thread.run() worker
+    # Mind the thread-safety of calls made from this method
+    def _do_message_process_pass(self):
+        try:
+            # block on thread-safe message queue with a small timeout to ensure
+            # the loop rate remains high in case we wanted to do other tasks
+            input_message = self._input_message_queue.get(block=True, timeout=0.05)
             
             # Note consumer and delivery tags so we follow up with message
             # acknowledgements to the source AMQP Consumer. We are making an 
@@ -399,84 +346,76 @@ class MessageProcessingPipeline(Service):
             input_message_delivery_tag = input_message.basic_deliver.delivery_tag
             input_message_type = self.routing_key_message_type(input_message.routing_key)
     
-            # We expect to throw Exceptions on any reason why we are unable to 
-            # process this messsage.
-            try:
-                # Reject now if the input_message_type is unknown as we do not 
-                # have knowledge of the type nor a matching processor
-                
-                # Retrieve a MessageProcessor which advertises it can process this Message
-                processor = self.processor_for_amqp_routing_key(input_message_routing_key)
-                if not processor and not input_message_type:
-                    raise MessageTypeUnsupportedError("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
-                
-                # Process Message and perform follow-on actions
-                #processor_output = self._process_message(input_message, input_message_type)
-                
-                # Message Pre-processing
-                # Generally processing of a message which may be common to all message types
-                #intermediary_data = self._pre_process(input_message, input_message_routing_key)
-                # bypass preprocessor
-
-                # Final processing with the MessageProcessor
-                # Note we are adding a proces_method(data) method -- this is an assumption
-                try:
-                    processor_output = processor.process_message(input_message)
-                except Exception as e:
-                    raise MessageProcessingFailedError(e)
+            # Reject now if the input_message_type is unknown as we do not 
+            # have knowledge of the type nor a matching processor
             
-                # Pipeline test mode
+            # Retrieve a MessageProcessor which advertises it can process this Message
+            processor = self.processor_for_amqp_routing_key(input_message_routing_key)
+            if not processor and not input_message_type:
+                raise MessageTypeUnsupportedError("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
+            
+            # Process Message and perform follow-on actions
+            #processor_output = self._process_message(input_message, input_message_type)
+            
+            # Message Pre-processing
+            # Generally processing of a message which may be common to all message types
+            #intermediary_data = self._pre_process(input_message, input_message_routing_key)
+            # bypass preprocessor
+
+            # Final processing with the MessageProcessor
+            # Note we are adding a proces_method(data) method -- this is an assumption
+            processor_output = processor.process_message(input_message)
+
+            # Pipeline test mode
 #                if self.test_mode("pipeline_no_output"):
 #                    self.logger.info("test_mode(pipeline_no_output) is set, no output!")
 #                    self.logger.info(processor_output)
 #                    return
 
-                if len(self.message_output_adapters) != 1: print("CONFUSED. we have zero or more than one output adapter!")
+            if len(self.message_output_adapters) != 1: print("CONFUSED. we have zero or more than one output adapter!")
 
-                self.write_message_out(processor_output)
+            # Write Message to MessageOutputAdapter(s)
+            self.write_message_out(processor_output)
 
-#                if processor_output is None:
-#                    raise MessageProcessingFailedError("processer output is NoneType!")
+#            if processor_output is None:
+#                raise MessageProcessingFailedError("processer output is NoneType!")
+#        
+#            # Create AmqpMessage for flight
+#            if type(processor_output) == 'AmqpMessage':
+#                output_amqp_message = processor_output
+#            else:
+#                output_amqp_message = AmqpMessage(body=processor_output)
 #            
-#                # Create AmqpMessage for flight
-#                if type(processor_output) == 'AmqpMessage':
-#                    output_amqp_message = processor_output
-#                else:
-#                    output_amqp_message = AmqpMessage(body=processor_output)
-#                
-#                # we are allowing the processor to specify the publish exchange by
-#                # supplying an exchange property of the passed Amqp.Message object
-#                output_amqp_message.exchange = "test" #output_message.exchange
-#                output_amqp_message.routing_key = "test"
+#            # we are allowing the processor to specify the publish exchange by
+#            # supplying an exchange property of the passed Amqp.Message object
+#            output_amqp_message.exchange = "test" #output_message.exchange
+#            output_amqp_message.routing_key = "test"
 #
-#                # blocking publish output! new messages will be arriving in the input while we block
-#                if self._do_amqp_publish(output_amqp_message):
-#                    self.statistics.metric("messages_publish_failed")
-#                    self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
-#                    return # leave this call
-#                
-#                # this concludes a complete trip for a message! ourprimary goal
-#                self._amqp_consumers[0].ack_message(input_message_delivery_tag,False,input_message_consumer_tag)
-#                self.statistics.metric("messages_processed_total_completely")
-#                self.statistics.metric("messages_processed_type_%s_completely" % input_message_type)
-                
-            except MessageTypeUnsupportedError as e:
-                self.logger.info(e)
-                self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
-                self.statistics.metric("messages_processed_unknown_type")
-                
-            except MessageProcessingFailedError as e:
-                self.logger.warning("Message processing failed for msg with routing_key=%s: %s" % (input_message_routing_key,e))
-                self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
-                self.statistics.metric("messages_processed_failed_error")
-                
-            except Exception as e:
-                # what Message Acknowledgement shall we perform?
-                self.logger.error(exceptionhandling.traceback_string(e))
+#            # blocking publish output! new messages will be arriving in the input while we block
+#            if self._do_amqp_publish(output_amqp_message):
+#                self.statistics.metric("messages_publish_failed")
+#                self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
+#                return # leave this call
+#            
+#            # this concludes a complete trip for a message! ourprimary goal
+#            self._amqp_consumers[0].ack_message(input_message_delivery_tag,False,input_message_consumer_tag)
+#            self.statistics.metric("messages_processed_total_completely")
+#            self.statistics.metric("messages_processed_type_%s_completely" % input_message_type)
 
         except Empty:
-            pass # there was no messages for us, back to waiting we go
+            # there was no messages for us, back to waiting we go
+            pass 
+        
+        except MessageTypeUnsupportedError as e:
+            self.logger.info(e)
+            self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
+            self.statistics.metric("messages_processed_unknown_type")
             
+        except MessageProcessingFailedError as e:
+            self.logger.warning("Message processing failed for msg with routing_key=%s: %s" % (input_message_routing_key,e))
+            self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
+            self.statistics.metric("messages_processed_failed_error")
+        
         except Exception as e:
             self.logger.error("unexpected error in message processing loop: %s" % exceptionhandling.traceback_string(e))
             
@@ -515,18 +454,29 @@ class MessageProcessingPipeline(Service):
         except Exception as e:
             self.set_failed("critical exception in pipeline setup")
             self.logger.error(exceptionhandling.traceback_string(e))
-            exceptionhandling.print_full_traceback_console()
+            #exceptionhandling.print_full_traceback_console()
             
         self.logger.debug("startup_pipeline() completed")
 
+    # Cleanly shut down the pipeline
+    # Methods should block until the work has been confirmed
+    # Make sure we exit this method cleanly or we will foul up the run() 
+    #  loop and prevent Thread clean-up among other undesirables
     def _shutdown_pipeline(self):
-        self.logger.info("Shutting down pipeline")
+ 
+        self.logger.info("graceful shut down of pipeline requested")
+        
         # Statistics and Monitoring
-        self.stop_message_adapters(blocking=True)
-        self.logger.debug("shutdown_pipeline() completed")
+        try:
+            self.stop_message_adapters(blocking=True)
+        except Exception as e:
+            pass # AdapterStopTimeout, etc. Logging done in method
+            
+        self.logger.info("graceful pipeline shut down completed")
 
-    # Service::do_run()
-    # Called via Thread::run() and when we complete, our parent will cleanup
+    # Component::do_run()
+    # Called via base::run() which was called by Thread::run() 
+    # We do our work in a wrapped call so our parent may perform cleanup
     def do_run(self):
         
         self._startup_pipeline()
@@ -536,7 +486,7 @@ class MessageProcessingPipeline(Service):
         
         # The work loop
         while self.keep_working:
-            self._do_message_processing()
+            self._do_message_process_pass()
         
         self._shutdown_pipeline()
 
