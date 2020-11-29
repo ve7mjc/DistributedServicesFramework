@@ -91,7 +91,7 @@ class MessageProcessingPipeline(Service):
                 return None
             return processor
         except Exception as e:
-            self.logger.error(exceptionhandling.traceback_string())
+            self.log_exception()
             return None
     
     # Dynamically load, check, and register MessageProcessors
@@ -101,6 +101,7 @@ class MessageProcessingPipeline(Service):
         processor = self.load_message_processor(module_name)
         if processor:
             self._message_processors[processor.processor_name] = processor
+            self.registerchild(processor)
             self.logger.info("Loaded Message Processor %s.Processor, name='%s'" % (module_name,processor.processor_name))
             self.initialize_message_processor(processor.processor_name) 
         else:
@@ -108,41 +109,60 @@ class MessageProcessingPipeline(Service):
     
     ## Message Adapters ##
     
-    def add_message_input_adapter(self,adapter_type,**kwargs):
-        adapter = None
-        try:
-            if adapter_type == "amqp": # AmqpConsumer
-                kwargs["message_queue"] = self._input_message_queue
-                kwargs["statistics"] = self.statistics
-                adapter = MessageInputAdapterAmqpConsumer(**kwargs)
-            else:
-                raise Exception("adapter type %s is unknown" % adapter_type)
-        except Exception as e:
-            self.stop("unable to add MessageInputAdapter type %s - %s" % (adapter_type,e))
+    # adapter_type - can be an instance of a class which inherits 
+    #  MessageInputAdapter or MessageOutputAdapter, or a string containing
+    #  a MessageAdapter known to this class
+    def add_message_adapter(self,adapter_type,**kwargs):
+
+        if self.stop_requested:
+            self.log_info("refusing to configure message adapter as we are failed or stopped")
             return
-
-        self.logger.info("added %s type input adapter" % adapter_type)
-        if adapter: self._input_adapters.append(adapter)
-
-    # Add Message Output Adapter
-    def add_message_output_adapter(self,adapter_type,**kwargs):
+        
+        adapter_direction = None
         adapter = None
-        try:
-            if adapter_type == "amqp": # AmqpProducer
-                # attach Statistics and ServiceMonitor hooks?                
-                # kwargs["message_queue"] = self._input_message_queue
-                # kwargs["statistics"] = self.statistics
-                adapter = MessageOutputAdapterAmqpProducer(**kwargs)
-            elif adapter_type == "console":
-                adapter = MessageOutputAdapterConsoleWriter(**kwargs)
-            else:
-                raise Exception("adapter type %s is unknown" % adapter_type)
-        except Exception as e:
-            self.stop("unable to add MessageOutputAdapter type %s - %s" % (adapter_type,e))
 
-        if adapter: # if created
-            self._output_adapters.append(adapter)
-            self.logger.info("added %s type output adapter" % adapter_type)
+        try:
+            if isinstance(adapter_type,MessageInputAdapter) or isinstance(adapter_type,MessageOutputAdapter):
+                # We are an instance of a MessageAdapter
+                adapter_type_str = type(adapter_type).__name__
+                adapter = adapter_type # pass the reference along
+            elif isinstance(adapter_type,str):
+                adapter_type_str = adapter_type
+                if adapter_type == "amqpconsumer": # AmqpConsumer
+                    kwargs["message_queue"] = self._input_message_queue
+                    kwargs["statistics"] = self.statistics
+                    adapter = MessageInputAdapterAmqpConsumer(**kwargs)
+                elif adapter_type == "amqpproducer": # AmqpProducer
+                    # attach Statistics and ServiceMonitor hooks?                
+                    # kwargs["message_queue"] = self._input_message_queue
+                    # kwargs["statistics"] = self.statistics
+                    adapter = MessageOutputAdapterAmqpProducer(**kwargs)
+                elif adapter_type == "consolewriter":
+                    adapter = MessageOutputAdapterConsoleWriter(**kwargs)
+                else:
+                    raise Exception("type is not registered!")
+            else:
+                raise Exception("adapter must derive from class Message{Input|Output}Adapter!")
+
+            # Check the Message Adapter instance
+            if adapter and isinstance(adapter,MessageInputAdapter):
+                adapter.setmessagequeue(self._input_message_queue)
+                self._input_adapters.append(adapter)
+                adapter_direction = "Input"
+            elif adapter and isinstance(adapter,MessageOutputAdapter):
+                self._output_adapters.append(adapter)
+                adapter_direction = "Output"
+            else:
+                raise Exception("unknown problem. `adapter` is not an instance of MessageAdapter!")
+            
+            # Message Adapter composition and callbacks
+            self.registerchild(adapter)
+            self.logger.info("added <%s> Message %s Adapter" % (adapter_type_str,adapter_direction))
+
+        except Exception as e:
+            self.log_exception()
+            self.stop(Exception("failed to add Message Adapter \"%s\": %s" % (adapter_type_str,e.__str__())))
+
 
     # Start Message Input and Output Adapters
     # Call MessageAdapter.start() method on each
@@ -189,7 +209,7 @@ class MessageProcessingPipeline(Service):
             for adapter in adapters:
                 if adapter.is_ready(): adapters_ready += 1
                 if adapter.is_failed():
-                    raise MessageAdapterStartupFailed(adapter_type)
+                    raise MessageAdapterStartupFailed(type(adapter).__name__)
             if adapters_ready == len(adapters):
                 return adapters_ready
             time.sleep(0.01) # test for impact without
@@ -203,8 +223,8 @@ class MessageProcessingPipeline(Service):
     # report they have been stopped or we have timed out - whichever is first
     # Adapters must inherit/composition from the 'Component' Class
     #  which provides stop() and @property.stopped
-    def stop_message_adapters(self,blocking=True):
-        
+    def stop_message_adapters(self):
+        blocking = True       
         self.logger.debug("requesting %s Message Input Adapters(s) and %s Message Output Adapters(s) stop" 
             % (len(self._input_adapters), len(self._output_adapters)))
         
@@ -281,7 +301,7 @@ class MessageProcessingPipeline(Service):
             self.logger.info("no processor found for routing_key")
             return None
         except Exception as e:
-            self.logger.error(": %s" % exceptionhandling.traceback_string(e))
+            self.log_exception()
 
     # we are assured the message_type is a valid message type or None
     # however a known message_type may not have a processor
@@ -312,7 +332,9 @@ class MessageProcessingPipeline(Service):
             try: # dont assume this subclass method will behave
                 return self.pre_process_message(input_message, message_type)
             except Exception as e:
-                self.logger.error("message processing failed in pre-processing: %s" % exceptionhandling.traceback_string(e))
+                self.logger.error("message processing failed in pre-processing, see next.")
+                self.log_exception()
+                
 
     # wrapper function to accomodate future threads or redirection
     def _do_amqp_publish(self, amqp_message):
@@ -321,6 +343,7 @@ class MessageProcessingPipeline(Service):
             if producer_response == "ack":
                 return False
         except Exception as e:
+            self.log_exception()
             raise Exception("_do_amqp_publish error: %s" % e)
         return True
 
@@ -336,35 +359,39 @@ class MessageProcessingPipeline(Service):
         try:
             # block on thread-safe message queue with a small timeout to ensure
             # the loop rate remains high in case we wanted to do other tasks
-            input_message = self._input_message_queue.get(block=True, timeout=0.05)
+            message = self._input_message_queue.get(block=True, timeout=0.05)
             
-            # Note consumer and delivery tags so we follow up with message
-            # acknowledgements to the source AMQP Consumer. We are making an 
-            # assumption here that we are working with a valid AMQP message
-            input_message_routing_key = input_message.routing_key
-            input_message_consumer_tag = input_message.basic_deliver.consumer_tag
-            input_message_delivery_tag = input_message.basic_deliver.delivery_tag
-            input_message_type = self.routing_key_message_type(input_message.routing_key)
-    
-            # Reject now if the input_message_type is unknown as we do not 
-            # have knowledge of the type nor a matching processor
-            
-            # Retrieve a MessageProcessor which advertises it can process this Message
-            processor = self.processor_for_amqp_routing_key(input_message_routing_key)
-            if not processor and not input_message_type:
-                raise MessageTypeUnsupportedError("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
-            
-            # Process Message and perform follow-on actions
-            #processor_output = self._process_message(input_message, input_message_type)
-            
-            # Message Pre-processing
-            # Generally processing of a message which may be common to all message types
-            #intermediary_data = self._pre_process(input_message, input_message_routing_key)
-            # bypass preprocessor
+            if type(message).__name__ == "amqpmessage":
+                # Note consumer and delivery tags so we follow up with message
+                # acknowledgements to the source AMQP Consumer. We are making an 
+                # assumption here that we are working with a valid AMQP message
+                input_message_routing_key = input_message.routing_key
+                input_message_consumer_tag = input_message.basic_deliver.consumer_tag
+                input_message_delivery_tag = input_message.basic_deliver.delivery_tag
+                input_message_type = self.routing_key_message_type(input_message.routing_key)
 
-            # Final processing with the MessageProcessor
-            # Note we are adding a proces_method(data) method -- this is an assumption
-            processor_output = processor.process_message(input_message)
+                # Reject now if the input_message_type is unknown as we do not 
+                # have knowledge of the type nor a matching processor
+                
+                # Retrieve a MessageProcessor which advertises it can process this Message
+                processor = self.processor_for_amqp_routing_key(input_message_routing_key)
+                if not processor and not input_message_type:
+                    raise MessageTypeUnsupportedError("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
+                    
+                # Process Message and perform follow-on actions
+                #processor_output = self._process_message(input_message, input_message_type)
+                
+                # Message Pre-processing
+                # Generally processing of a message which may be common to all message types
+                #intermediary_data = self._pre_process(input_message, input_message_routing_key)
+                # bypass preprocessor
+
+                # Final processing with the MessageProcessor
+                # Note we are adding a proces_method(data) method -- this is an assumption
+                message = processor.process_message(message)
+            
+            else: 
+                pass
 
             # Pipeline test mode
 #                if self.test_mode("pipeline_no_output"):
@@ -375,7 +402,7 @@ class MessageProcessingPipeline(Service):
             if len(self.message_output_adapters) != 1: print("CONFUSED. we have zero or more than one output adapter!")
 
             # Write Message to MessageOutputAdapter(s)
-            self.write_message_out(processor_output)
+            self.write_message_out(message)
 
 #            if processor_output is None:
 #                raise MessageProcessingFailedError("processer output is NoneType!")
@@ -417,8 +444,8 @@ class MessageProcessingPipeline(Service):
             self.statistics.metric("messages_processed_failed_error")
         
         except Exception as e:
-            self.logger.error("unexpected error in message processing loop: %s" % exceptionhandling.traceback_string(e))
-            
+            self.log_exception()
+
         # this round of work has completed
         return 
 
@@ -432,31 +459,31 @@ class MessageProcessingPipeline(Service):
             # crude check as we may have attempted to start a number of different
             # message producers - some of which may have failed
             if not self.valid_message_processors_loaded_num:
-                self.set_failed("not enough Message Processors - cannot continue")
+                self.stop("not enough Message Processors - cannot continue")
                 return
 
             # Must register statistics and metrics as messages may arrive
             # immediately after starting adapters
-            self.service_monitor.add_statistics_metric_watchdog("messages_processed_total_completely", 5)
+            self.monitor.add_statistics_metric_watchdog("messages_processed_total_completely", 5)
 
             # Start Message Adapters
             # Calls will return the number of adapters now ready or raise an 
             # exception on detection of a single adapter failure or timeout
             self.start_message_output_adapters(blocking=True)
+            
             self.start_message_input_adapters(blocking=True)
 
         except MessageAdapterStartupTimeout as e:
-            self.set_failed("Message Adapter Startup Timeout: " % e)
+            self.set_failed("Message Adapter Startup Timeout: %s" % e)
 
         except MessageAdapterStartupFailed as e:
-            self.set_failed("Message Adapter Startup Failure: " % e)
+            self.set_failed("Message Adapter Startup Failure: %s" % e)
 
         except Exception as e:
+            self.log_exception()
             self.set_failed("critical exception in pipeline setup")
-            self.logger.error(exceptionhandling.traceback_string(e))
-            #exceptionhandling.print_full_traceback_console()
             
-        self.logger.debug("startup_pipeline() completed")
+        self.log_info("startup_pipeline() completed")
 
     # Cleanly shut down the pipeline
     # Methods should block until the work has been confirmed
@@ -468,19 +495,18 @@ class MessageProcessingPipeline(Service):
         
         # Statistics and Monitoring
         try:
-            self.stop_message_adapters(blocking=True)
+            self.stop_message_adapters()
         except Exception as e:
-            pass # AdapterStopTimeout, etc. Logging done in method
+            self.log_exception(stacklevel=2)
             
         self.logger.info("graceful pipeline shut down completed")
 
     # Component::do_run()
-    # Called via base::run() which was called by Thread::run() 
+    # Called via super(component).run() which was called by self.thread.start()
     # We do our work in a wrapped call so our parent may perform cleanup
-    def do_run(self):
-        
+    def run(self):
+
         self._startup_pipeline()
-       
         # single threaded processor - this could be multithreaded
         # we could call a child or parent class method work loop here also
         

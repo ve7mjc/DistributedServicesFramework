@@ -16,6 +16,8 @@
 # - Threaded watchdog
 #
 
+import dsf.servicedomain as servicedomain
+
 import logging
 import argparse
 import configparser
@@ -23,35 +25,33 @@ import configparser
 import signal
 
 import sys # argv[..], exit
-import os.path # file path checking
 
-from threading import Thread
 import time
 
 from datetime import datetime
-import logging
 
 from dsf.services import Component
 from dsf import exceptionhandling, utilities
 from dsf.monitor import Monitor
 
-# Multiple Inheritance is a tricky thing - like riding a unicycle
-# over a dental floss tight rope over a forest of razor blades
-class Service(Component,Thread):
+class Service(Component):
 
+    """ defaults - override in derived classes """
+    
     _config_required = False
+    _config_filename = None # or auto
     
-    _config_filename = None
-    _config = None
-    
-    # let the Component base class know we will require special with start() 
-    # and stop() calls
+    """ class behavior """
+
     _threaded = True
+
+
+    _config = None
 
     def __init__(self, **kwargs):
         try:
-            # Set the handler for signal signalnum to the function handler
-            # will be called with 2 arguments - signal.SIG_IGN or signal.SIG_DFL
+            # Set handler for signal signalnum to a class method
+            # signal(signal.SIG_IGN, or signal.SIG_DFL
             signal.signal(signal.SIGINT, self.signal_handler)
             
             # Process keyword arguments from class initializer
@@ -72,14 +72,14 @@ class Service(Component,Thread):
             # Commandline Arguments
             # application may access arguments via self.cli_args
             # application should also be able to add their own arguments
-            parser = argparse.ArgumentParser(description=self.name)
+            #parser = argparse.ArgumentParser(description=self.name)
             #parser.add_argument('-u','--receivePort', dest='udp_port', type=int, required=True,
             #                   help='port to listen for UDP AIVDM messages')
             #parser.add_argument('-l','--serverPort', dest='tcp_port', type=int, required=True,
             #                   help='port to listen for TCP clients to serve AIVDM messages')
             #parser.add_argument('-b','--backfill', dest='backfill', type=int,
             #                   help='provide new client connections with a smart backfill of traffic over past specified seconds')
-            self.cli_args = parser.parse_args() # required in order to at least process -h or --help
+            #self.cli_args = parser.parse_args() # required in order to at least process -h or --help
 
             # search for configuration file and load
             # todo - add config file args from cli
@@ -91,17 +91,12 @@ class Service(Component,Thread):
             if self.config: self.log_info("loaded configuration from %s" % self._config_filename)
 
             # logger initializes here
-            Component.__init__(self)
+            super().__init__()
+
+            self.createmonitor()
             
-            # Thread::name - A thread has a name used for identification purposes 
-            # only. It has no semantics. Multiple threads may be given the same name.
-            # The initial name is set by the constructor.
-            Thread.__init__(self, name="%s.Service" % self.name)
-            
-            # pass reference to our Statistics Class instance which the
-            # Component constructor would have established
-            self._service_monitor = Monitor(statistics=self._statistics)
-            self._service_monitor.start()
+            # start everything up?
+            #self.start()
             
         except Exception as e:
             # we are abandoning ship
@@ -115,6 +110,8 @@ class Service(Component,Thread):
         pass
 
     def load_config(self,config_filename=None):
+
+        from os import path
 
         # We do not have a logger at this point so we will need to create one
         #  if we are going to raise Exception and terminate
@@ -132,7 +129,7 @@ class Service(Component,Thread):
 
         # search to see if any of these configurations exist
         for filename_to_check in possible_config_filenames:
-            if os.path.exists(filename_to_check):
+            if path.exists(filename_to_check):
                 self._config_filename = filename_to_check
                 break
         
@@ -164,38 +161,27 @@ class Service(Component,Thread):
     def config(self):
         return self._config
 
-    def run(self):
+    def createmonitor(self):
+        self._monitor = Monitor()
+        self.registerchild(self._monitor)
+    
+    @property
+    def monitor(self):
+        return self._monitor
         
-        # we are running
-        
-        # pass to child run loop if one is present
-        # wrap in try-except block to ensure the highest likelihood
-        # we can do a graceful shutdown on fatal exception in the run_loop
-        try:
-            if hasattr(self, "do_run"): self.do_run()
-        except Exception as e:
-            self.logger.error("fatal exception in run_loop; must shut down : %s" % exceptionhandling.traceback_string(e))
-            exceptionhandling.print_full_traceback_console()
-        
-        # subclass is done work and we are shutting down
-        
-        # dump session statistics to logging
-        if self.statistics:
-            self.logger.info(self.statistics.stats_string_test())
-        
-        # call for the clean-up portion
-        Thread.run(self)
-        
-        # logging module registers logging.shutdown() to atexit automatically        
-        return
-
-    # Signal handler to catch and handle signals
+    # Signal handler
     def signal_handler(self, signum, frame):
-        if hasattr(self,"__sigint_caught"):
-            self.logger.warning("caught an additional SIGINT")
+        if hasattr(signal,"strsignal"): # python >= 3.8
+            strsig = signal.strsignal(signum)
         else:
-            self.__sigint_caught = True
-            self.stop("Caught SIGINT")
+            sig_names = {23:"NSIG", 22:"SIGABRT", 21:"SIGBREAK", 8:"SIGFPE", 4:"SIGILL",
+                2:"SIGINT", 11:"SIGSEGV", 15:"SIGTERM", 0:"SIG_DFL", 1:"SIG_IGN"}
+            strsig = sig_names[signum]
+        if hasattr(self,"__signal_caught"):
+            self.logger.warning("caught an additional %s" % strsig)
+        else:
+            self.__signal_caught = True
+            self.stop("Caught %s" % strsig)
 
     # optional for certain, likely uncommon scenarios
     def wait_forever(self):
@@ -209,24 +195,8 @@ class Service(Component,Thread):
     # when the Thread::run() method returns and thus we must implement our own
     # control logic
     def stop(self, reason=None):
-        Component.stop(self,reason)
         # Service specific stop actions
-        self.service_monitor.stop()
+        self.monitor.stop()
 
-    # Thread::is_alive() - Return whether the thread is alive.
-    # This method returns True just before the run() method starts until just 
-    # after the run() method terminates. The module function enumerate() 
-    # returns a list of all alive threads.
-    
-    # Thread::join([(float)timeout]) - Wait until the thread terminates. 
-    # This blocks the calling thread until the thread whose join() method is 
-    # called terminates – either normally or through an unhandled exception – 
-    # or until the optional timeout occurs.
-    # - When the timeout argument is present and not None, it should be a 
-    # floating point number specifying a timeout for the operation in seconds 
-    # (or fractions thereof). As join() always returns None, you must call 
-    # isAlive() after join() to decide whether a timeout happened – if the 
-    # thread is still alive, the join() call timed out.
-    # - When the timeout argument is not present or None, the operation will 
-    # block until the thread terminates.
+        super().stop(reason)
 

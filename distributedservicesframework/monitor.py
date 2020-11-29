@@ -1,7 +1,6 @@
 # Service Monitor
 # integrated watchdog functionality?
 
-from threading import Thread, Lock
 import time
 from datetime import datetime
 import logging
@@ -17,8 +16,8 @@ class Task():
 # Intention to have a single Monitor instance per Service
 # Classes may obtain a handle to a Monitor, or interface through a MixIn Class
 # Monitor is Threaded and may remain asynchronous and able to monitor components
-#  from an isolated 
-class Monitor(Component,Thread):
+#  from an isolated
+class Monitor(Component):
 
     _watchdogs = []
     
@@ -33,10 +32,7 @@ class Monitor(Component,Thread):
 
         # pass the keyword arguments up
         # bring the logging, name down
-        Component.__init__(self, **kwargs)
-
-        # Thread competes for self._name!
-        Thread.__init__(self)
+        super().__init__(**kwargs)
         
         self.register_periodic_task(self.check_watchdogs,0.5,name="check_watchdogs")
         # self.register_periodic_task(self.task_one,2,name="task_one")
@@ -94,7 +90,8 @@ class Monitor(Component,Thread):
                 else: self.logger.error("periodic task %s function is not callable!" % task["name"])
 
     def task_statistics_to_log(self):
-        self.logger.info(self.statistics.stats_string_test())
+        pass
+        #self.log_info(self.statistics.stats_string_test())
 
     def task_one(self):
         self.stop_periodic_task("task_one")
@@ -102,7 +99,7 @@ class Monitor(Component,Thread):
 
     # we are a Component and thus our do_run method is called
     # from the super run() method
-    def do_run(self):
+    def run(self):
         
         # Start the tasks - ok, really just priming the last_run field
         # so the scheduler knows we need to run it time_secs from now
@@ -118,12 +115,11 @@ class Monitor(Component,Thread):
             
             self.do_task_scheduling()
             
-            # sleep for 200ms before doing it again
-            time.sleep(0.2)
+            self.powernap(200)
 
         return # end while self.keep_working
 
     # redeclare method here to prevent Thread stop method from being called
-    def stop(self, reason=None):
-        super().stop()
+#    def stop(self, reason=None):
+#        super().stop()
         #Component.stop(self,reason)

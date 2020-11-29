@@ -11,6 +11,8 @@ from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
 from dsf.amqp import amqputilities
 from dsf.amqp.amqpmessage import AmqpMessage
 
+from dsf.messageadapters import MessageInputAdapter
+
 # todo, if channel is closed on connect - it will not quit nicely (hangs)
 #2020-11-16 00:12:53,062 pika.channel WARNING Received remote Channel.Close (404): "NOT_FOUND - no queue 'weather_test' in vhost '/'" on <Channel number=1 OPEN conn=<SelectConnection OPEN transport=<pika.adapters.utils.io_services_utils._AsyncPlaintextTransport object at 0x7f0c659fcc10> params=<ConnectionParameters host=localhost port=5672 virtual_host=/ ssl=False>>>
 #2020-11-16 00:12:53,062 msc-processor.Consumer INFO Closing connection
@@ -29,9 +31,12 @@ from dsf.amqp.amqpmessage import AmqpMessage
 # Test Modes
 # amqp_nack_requeue_all_messages
 # todo - should we respond to amqp.consumer.* ?
-class AsynchronousConsumer(AsynchronousClient):
+class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
 
     _client_type = ClientType.Consumer
+    
+    # Message Input Adapter
+    _adapter_name = "AmqpConsumer"
 
     _exchange = None
     _exchange_type = None

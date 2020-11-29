@@ -4,7 +4,6 @@
 
 import pika # AMQP Client
 
-from threading import Thread, Lock
 import functools
 from queue import Queue
 import logging
@@ -25,7 +24,8 @@ from pprint import pprint
 # with the ioloop itself
 
 #from distributedservicesframework.statistics import Statistics
-from dsf.services import Component
+#from dsf.services import Component
+#from dsf.messaging import MessageAdapter
 
 class ClientType(Enum):
     Unspecified = 0,
@@ -43,7 +43,7 @@ class ClientType(Enum):
 # Configure Exchange-Queue Bindings [optional] with callback
 # Unbind unused Exchange-Queue Bindings [optional] with callback
 # Notify sub-classes (Producer or Consumer) client is ready via ::client_ready()
-class AsynchronousClient(Component,Thread):
+class AsynchronousClient():
 
     # declare me in a Producer, Consumer, class etc
     _client_type = ClientType.Unspecified
@@ -410,7 +410,7 @@ class AsynchronousClient(Component,Thread):
 
     # This method is called by the Child.run() method after being called by
     # the Thread.start() method.
-    def do_run(self):
+    def run(self):
         
         # default to reconnecting on unexpected channel and connection closures
         while self.keep_working:
