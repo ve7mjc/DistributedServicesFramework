@@ -1,24 +1,30 @@
 # Service Monitor
 # integrated watchdog functionality?
 
+import dsf.domain
+
 import time
 from datetime import datetime
 import logging
 
 from dsf.statistics import Statistics
 from dsf import utilities, exceptionhandling
+from dsf.event import *
 from dsf.watchdog import Watchdog
 from dsf.component import Component
+from dsf.amqp import AsynchronousProducer, AsynchronousConsumer
 
-class Task():
-    pass
+from queue import Empty,Queue
 
-# Intention to have a single Monitor instance per Service
-# Classes may obtain a handle to a Monitor, or interface through a MixIn Class
-# Monitor is Threaded and may remain asynchronous and able to monitor components
-#  from an isolated
-class Monitor(Component):
 
+# (1) Supervisor instance per Service
+# - Monitor all components of Service
+#   - Watchdogs
+#   - Events
+# - Link to Remote Monitoring Servicse via AMQP
+# - Maintain comprehensive service state remotely
+class Supervisor(Component):
+    
     _watchdogs = []
     
     # list of tasks of type Dict; see register_periodict_task()
@@ -27,23 +33,41 @@ class Monitor(Component):
     # let the Component base class know we will require special with start() 
     # and stop() calls
     _threaded = True
-
+    
+    # TODO: this results in boundless memory consumption
+    _eventlog = []
+    
+    _registered_components = []
+    
+    _logger_name = "supervisor"
+    
+    _heartbeats = {}
+    
     def __init__(self, **kwargs):
-
-        # pass the keyword arguments up
-        # bring the logging, name down
         super().__init__(**kwargs)
         
-        self.register_periodic_task(self.check_watchdogs,0.5,name="check_watchdogs")
-        # self.register_periodic_task(self.task_one,2,name="task_one")
-        self.register_periodic_task(self.task_statistics_to_log,10,name="statistics_console")
+        try:
+            self.kwconfig(kwargs,"monitor") # kw args namespace for modules
+            self._amqp_producer = AsynchronousProducer(**kwargs,logger_name="supervisor.amqp_producer",exchange=self.kwconfig.get("publish_exchange"))
+            self._amqp_consumer = AsynchronousConsumer(**kwargs,logger_name="supervisor.amqp_consumer",queue=self.kwconfig.get("control_queue"))
+
+            self.register_periodic_task(self.check_watchdogs,0.5,name="check_watchdogs")
+            # self.register_periodic_task(self.task_one,2,name="task_one")
+            self.register_periodic_task(self.task_statistics_to_log,10,name="statistics_console")
+        except Exception as e:
+            self.log_exception()
+        
+    @property
+    def producer(self): return self._amqp_producer
+        
+    @property
+    def consumer(self): return self._amqp_consumer
         
     # add a watchdog that looks for a statistics call on a particular
     # field and times out when time is reached without activity
     def add_statistics_metric_watchdog(self, metric_key, timeout_secs):
-        wd = Watchdog(statistics_metric=metric_key, timeout_secs=timeout_secs, service_monitor=self)
+        wd = Watchdog(statistics_metric=metric_key,timeout_secs=timeout_secs,service_monitor=self)
         self._watchdogs.append(wd)
-        return
 
     # call once per second
     def check_watchdogs(self):
@@ -54,7 +78,7 @@ class Monitor(Component):
     def do_task(self): 
         #if self.__statistics:
         for metric_type in self.statistics.metrics_types:
-            print("%s: %s" % (metric_type, self.statistics.get_metric(metric_type)))
+            self.log_debug("%s: %s" % (metric_type, self.statistics.get_metric(metric_type)))
     
     def register_periodic_task(self, function, time_seconds=1, **kwargs):
         task = {}
@@ -67,7 +91,10 @@ class Monitor(Component):
         task["last_run"]=None
         self._scheduled_tasks.append(task)
         return False
-        
+
+#    def send_status(self):
+#        self.producer.publish(routing_key="monitor.status",body="testing!",blocking=True)
+
     def stop_periodic_task(self,task_name):
         for task in self._scheduled_tasks:
             if task_name == task["name"]:
@@ -97,29 +124,64 @@ class Monitor(Component):
         self.stop_periodic_task("task_one")
         print("task 1!")
 
-    # we are a Component and thus our do_run method is called
-    # from the super run() method
+#    def register_event(self,agent_obj,event):
+#        self.log_info("Event: %s %s %s" % (event.timestamp,event.component.name,event.type))
+#        if self.keep_running:
+#            self.producer.publish(routing_key="monitor.status",body="testing!",blocking=True)
+
+    def process_component_events(self):
+        # Called from thread
+        while True:
+            try:
+                event = dsf.domain.component_events.get_nowait()
+            except Empty: break
+
+            if event.data["type"] == ComponentEvent.Heartbeat:
+                print("detected heartbeat!")
+                print(event.to_json())
+
+    # Called from Component.thread.start(target=_run())
+    """ ### THREAD SAFETY ### """
     def run(self):
-        
+        self.log_debug("monitor.run() starting")
+        try:
+            self._amqp_producer.start()
+            self._amqp_consumer.start()
+        except Exception as e:
+            self.log_exception()
+
         # Start the tasks - ok, really just priming the last_run field
         # so the scheduler knows we need to run it time_secs from now
         for task in self._scheduled_tasks:
             current_utc_time = utilities.utc_timestamp()
             if task["autostart"]:
                 task["last_run"] = current_utc_time
-        
-        # do setup
+
         last_report_run = datetime.now().timestamp()
 
-        while self.keep_working:
+        """ LOOP """
+        try:
+            while self.keep_working:
+                self.heartbeat()
+                self.process_component_events()
+                #self.do_task_scheduling()
+        except Exception as e:
+            print("exception in service loop")
+            self.log_exception()        
             
-            self.do_task_scheduling()
-            
-            self.powernap(200)
+        """ SHUTDOWN """
+        
+        # cleanup
+        self.producer.stop()
+        self.consumer.stop()
 
-        return # end while self.keep_working
-
-    # redeclare method here to prevent Thread stop method from being called
-#    def stop(self, reason=None):
-#        super().stop()
-        #Component.stop(self,reason)
+        self.log_debug("passed amqp client stops")
+        
+        self.producer.join(1)
+        self.consumer.join(1)
+        
+    """ ### THREAD SAFETY ### """
+    
+    
+#        self._amqp_producer.join(1)
+#        self._amqp_consumer.join(1)

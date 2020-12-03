@@ -1,5 +1,7 @@
 # convenience for tracebacks for debugging
 
+import dsf.domain
+
 from os import path
 from sys import stdout, exc_info
 from traceback import format_exc

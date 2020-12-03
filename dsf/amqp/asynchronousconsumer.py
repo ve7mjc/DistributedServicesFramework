@@ -1,6 +1,8 @@
 # Asynchronous, Threaded AMQP Consumer
 # Matthew Currie - Nov 2020
 
+import dsf.domain
+
 from pika.exceptions import ChannelWrongStateError
 
 import functools # callbacks
@@ -11,7 +13,7 @@ from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
 from dsf.amqp import amqputilities
 from dsf.amqp.amqpmessage import AmqpMessage
 
-from dsf.messageadapters import MessageInputAdapter
+#from dsf.messageadapters import MessageInputAdapter
 
 # todo, if channel is closed on connect - it will not quit nicely (hangs)
 #2020-11-16 00:12:53,062 pika.channel WARNING Received remote Channel.Close (404): "NOT_FOUND - no queue 'weather_test' in vhost '/'" on <Channel number=1 OPEN conn=<SelectConnection OPEN transport=<pika.adapters.utils.io_services_utils._AsyncPlaintextTransport object at 0x7f0c659fcc10> params=<ConnectionParameters host=localhost port=5672 virtual_host=/ ssl=False>>>
@@ -31,7 +33,7 @@ from dsf.messageadapters import MessageInputAdapter
 # Test Modes
 # amqp_nack_requeue_all_messages
 # todo - should we respond to amqp.consumer.* ?
-class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
+class AsynchronousConsumer(AsynchronousClient):
 
     _client_type = ClientType.Consumer
     
@@ -70,16 +72,20 @@ class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
     def __init__(self, **kwargs):
 
         self._queue = kwargs.get("queue", None)
+        
         self._received_messages_queue = kwargs.get("message_queue", None)
         self._strip_routing_key_prefix = kwargs.get("strip_key_prefix", None)
         
         self._consumer_tag = None
         self._consuming = False
 
-        if not self._queue: self.set_failed("a queue has not been specified")
+        super().__init__(**kwargs) # agent is configured here
+
+        #if not self._queue: self.set_failed("a queue has not been specified")
         
-        super().__init__(**kwargs)
-   
+    def pre_run_checks(self):
+        if not self._queue: self.set_failed("queue not defined")
+
     # Called when the underlying AMQP Client is ready
     # The TCP (or TLS) connection is established, channel is open, 
     # exchanges, queues, and bindings are declared.
@@ -94,7 +100,7 @@ class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
     # Consumer is ready. Messages may begin flowing.
     def consumer_ready(self):
         self._ready = True
-        self.logger.info("AMQP Consumer is ready.")
+        self.logger.debug("AMQP Consumer is ready.")
 
     # called prior to connection (and reconnection) attempt
     # declare here to quiet the base class warnings
@@ -136,20 +142,23 @@ class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
     #   Provide callback for received messages
     #   Returns the unique RabbitMQ consumer tag
     def start_consuming(self):
-        self.logger.debug("sending Basic.Cancel with callback request")
-        self._channel.add_on_cancel_callback(self.on_consumer_cancelled_remote)
-        self._consumer_tag = self._channel.basic_consume(
-            self._queue, self._on_message, auto_ack=False)
-        self._consuming = True
-        self.consumer_ready()
+        if not self._queue:
+            self.log_error("queue not supplied for AMQP Consumer. Cannot consume.")
+            return True
+        try:
+            self._channel.add_on_cancel_callback(self.on_consumer_cancelled_remote)
+            self._consumer_tag = self._channel.basic_consume(
+                self._queue, self._on_message, auto_ack=False)
+            self._consuming = True
+            self.consumer_ready()
+        except:
+            self.log_exception()
         
     @property
-    def is_consuming(self):
-        return self._consuming
+    def is_consuming(self): return self._consuming
 
     @property
-    def consumer_tag(self):
-        return self._consumer_tag
+    def consumer_tag(self): return self._consumer_tag
 
     # RabbitMQ has acknowledged cancellation of the consumer with a
     # Basic.CancelOk frame
@@ -281,6 +290,7 @@ class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
     def stop_activity(self):
         # Cover a few different scenarios so we keep the noise down and
         # ensure we get a clean exit
+        self.log_debug("consumer.stop_activity() called")
         if self._consuming:
             self.logger.debug('stopping consuming; sending Basic.Cancel RPC command')
             cb = functools.partial(self.on_consumer_cancelled_ok, userdata=self._consumer_tag)
@@ -293,4 +303,3 @@ class AsynchronousConsumer(AsynchronousClient,MessageInputAdapter):
             # This scenario sees only the connection open. No consumer or channel.
             if self._connection.is_open:
                 self._connection.ioloop.add_callback_threadsafe(self._connection.close())
-

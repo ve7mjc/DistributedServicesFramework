@@ -1,4 +1,6 @@
 #from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
+
+import dsf.domain
 from dsf.component import Component
 from dsf import exceptionhandling
 
@@ -67,17 +69,17 @@ class MessageInputAdapter(MessageAdapter):
 #    def __init__(self,**kwargs):
 #        super().__init__(**kwargs)
 
-
 class SimulatedMessageInputAdapter(MessageInputAdapter,Component):
     
     _adapter_type = "SimulatedMessageInput"
     _threaded = True
 
     def __init__(self,**kwargs):
-        super().__init__()
+        kwargs["logger_name"] = "simulatedinput"
+        super().__init__(**kwargs)
         
     def run(self):
-        self.setready()
+        self.set_ready()
         while self.keep_working:
             self.powernap(500)
             self.write("testing one two")
@@ -128,10 +130,11 @@ class MessageOutputAdapterConsoleWriter(MessageOutputAdapter,Component):
     
     _adapter_type = "ConsoleWriter"
 
-    def __init__(self,**kwargs):      
+    def __init__(self,**kwargs):
         # Component, then MessageOutputAdapter
+        kwargs["logger_name"] = "consolewriter"
         super().__init__(**kwargs)
-        self.setready()
+        self.set_ready()
         
     def write(self,message):
         print("ConsoleWriter: %s" % message)

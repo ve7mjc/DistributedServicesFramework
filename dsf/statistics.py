@@ -1,6 +1,8 @@
 # Statistics Module
 # 
 
+import dsf.domain
+
 # get_metric(field_name) returns value associated with metric key
 # (deprecated) - will instead have the watchdog go and periodically do their
 #   checks for statistics metric_keys.. 

@@ -1,3 +1,5 @@
+import dsf.domain
+
 from dsf.component import Component
 
 class MessageProcessorException(Exception):
@@ -32,9 +34,7 @@ class MessageProcessor(Component):
         self._logger_name = self._processor_name
         
         # Component constructor
-        super().__init__()
-        
-        self._constructor_called = True
+        super().__init__(**kwargs)
 
     def add_accepted_amqp_routing_key_pattern(self, routing_key_pattern):
         self._amqp_input_message_routing_key_acceptance_filters.append(routing_key_pattern)
@@ -53,7 +53,7 @@ class MessageProcessor(Component):
         # basic Class implementation issues
         if not self._processor_name: self.set_invalid("_processor_name not set")
         if not self._processor_version: self.set_invalid("_processor_version not set")
-        if not self._constructor_called: self.set_invalid("MessageProcessor constructor was not called!")
+        if not self.initialized: self.set_invalid("MessageProcessor constructor \"__init__()\" was not called!")
         
         # Call self.do_tests() which will call Child.tests() if it exists
         if self.do_tests(): self.set_invalid("Processor::tests() failed")

@@ -1,3 +1,4 @@
+import dsf.domain
 from dsf import utilities
 
 class Watchdog():

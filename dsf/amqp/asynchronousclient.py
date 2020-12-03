@@ -2,6 +2,9 @@
 # To be extended by Producer and Consumer
 # Matthew Currie - Nov 2020
 
+import dsf.domain
+from dsf.component import Component
+
 import pika # AMQP Client
 
 import functools
@@ -43,7 +46,7 @@ class ClientType(Enum):
 # Configure Exchange-Queue Bindings [optional] with callback
 # Unbind unused Exchange-Queue Bindings [optional] with callback
 # Notify sub-classes (Producer or Consumer) client is ready via ::client_ready()
-class AsynchronousClient():
+class AsynchronousClient(Component):
 
     # declare me in a Producer, Consumer, class etc
     _client_type = ClientType.Unspecified
@@ -84,7 +87,7 @@ class AsynchronousClient():
         pika_logger = logging.getLogger("pika").setLevel(logging.CRITICAL) # logging.CRITICAL
 
         # process keyword arguments
-        loglevel = kwargs.get("loglevel", logging.NOTSET)
+        loglevel = kwargs.get("loglevel", logging.DEBUG)
         loglevel = kwargs.get("level", loglevel) # alternate key name
         
         statistics = kwargs.get("statistics", None)
@@ -111,8 +114,8 @@ class AsynchronousClient():
     # Method called when this AMQP client has completed its connection
     # steps and a Producer or Consumer can now begin their specific steps.
     # Override me in a child class!
-    def client_ready(self): 
-        print("AsynchronousClient.client_ready() called - needs to be overridden!")
+    def client_ready(self):
+        self.log_warning("AsynchronousClient.client_ready() called - needs to be overridden!")
 
     # Add a routing_key pattern
     # Exchanges and Queues must be declared in order for this to be useful
@@ -200,8 +203,9 @@ class AsynchronousClient():
 
     # Close the RabbitMQ connection
     def close_connection(self):
-        self.logger.debug('closing connection')
-        self._connection.close()
+        self.log_debug('closing connection')
+        if self._connection and self._connection.is_open and not self._connection.is_closing:
+            self._connection.close()
 
     # Callback Method called from pika connection when connection is closed
     # param pika.connection.Connection connection: The closed connection obj
@@ -242,13 +246,15 @@ class AsynchronousClient():
             self.logger.warning('Channel was closed unexpectedly: %s' % reason)
         
         # a consumer 
-        if self._connection.is_open: self._connection.close()
+        if self._connection.is_open and not self._connection.is_closing: 
+            self._connection.close()
 
     # Cleanly close RabbitMQ channel
     # Send Channel.Close RPC command. Callback is already registered.
     def close_channel(self):
         self.logger.debug('Closing the channel')
-        if self._channel.is_open: self._channel.close()
+        if self._channel.is_open and not self._channel.is_closing: 
+            self._channel.close()
 
     # Method to allow us to specify a binding request prior to connection
     # which will be performed on connect and every reconnect
@@ -412,59 +418,76 @@ class AsynchronousClient():
     # the Thread.start() method.
     def run(self):
         
+        if hasattr(self,"pre_run_checks"):
+            self.pre_run_checks()
+        
         # default to reconnecting on unexpected channel and connection closures
         while self.keep_working:
-
-            # Make sure that calling methods may check the status of connection
-            # or throw an exception should it be illegally accessed            
-            self._connection = None
-            
-            self.prepare_connection() # child class specific methods
-            
-            # non-blocking, asynchronous call immediately returns a
-            # connection object
-            self._connection = self.connect() 
-            
-            # block here until released
-            self._connection.ioloop.start()
-
-            # We have disconnected
-            # Was this requested, and if not, is automatic reconnect enabled?
-            # Otherwise, we must repeat this loop immediately the first time
-            # and then increase our loop delay on subsequent reconect attempts
-            # FANCY DELAY BLOCK!
-            if self.keep_working and self._automatic_reconnect:
+    
+            try:
+                # Make sure that calling methods may check the status of connection
+                # or throw an exception should it be illegally accessed
+                self._connection = None
                 
-                self.set_failed("connection failed")
+                self.prepare_connection() # child class specific methods
                 
-                if not self._reconnect_attempts:
-                    # first reconnect attempt
-                    self.logger.info("reconnecting..")
-                    self._reconnect_attempts = 1
-                else:
-                    # 1,2,4,8,16,32,64,128, etc
-                    delay_time = self._reconnect_attempts * self._reconnect_attempts 
-                    max_delay_time = 120
-                    if delay_time > max_delay_time: delay_time = max_delay_time
-                    self.logger.info("delaying reconnect attempt # %s for %s seconds" % (self._reconnect_attempts,delay_time))
+                # non-blocking, asynchronous call immediately returns a
+                # connection object
+                self._connection = self.connect() 
+                
+                # block here until released
+                self.log_debug("calling self._connection.ioloop.start()")
+                try:
+                    self._connection.ioloop.start()
+                except Exception as e:
+                    print(type(e))
+                    self.log_exception()
+                    pass
+                    #self.log_exception(e)
+                self.log_debug("passed self._connection.ioloop.start()")
+
+                # We have disconnected
+                # Was this requested, and if not, is automatic reconnect enabled?
+                # Otherwise, we must repeat this loop immediately the first time
+                # and then increase our loop delay on subsequent reconect attempts
+                # FANCY DELAY BLOCK!
+                if self.keep_working and self._automatic_reconnect:
                     
-                    self._reconnect_attempts += 1
+                    self.set_failed("connection failed")
                     
-                    # we are no longer blocking on the ioloop so we cant block here too long
-                    # or we will be non-responsive to a shutdown request while waiting
-                    # check stop_request frequently
-                    delay_10_ms = delay_time * 100
-                    for i in range(delay_10_ms):
-                        if not self._stop_requested:
-                            time.sleep(0.01)
-                        else: break
-                    
-            # Connection has disconnected but automatic reconnect is disabled
-            # Not sure who would be crazy enough to roll this way
-            if not self._automatic_reconnect and self.keep_working:
-                self.set_failed("connection failed; auto reconnect is disabled")
-                self.stop("connection failed")
-                break
+                    if not self._reconnect_attempts:
+                        # first reconnect attempt
+                        self.logger.info("reconnecting..")
+                        self._reconnect_attempts = 1
+                    else:
+                        # 1,2,4,8,16,32,64,128, etc
+                        delay_time = self._reconnect_attempts * self._reconnect_attempts 
+                        max_delay_time = 120
+                        if delay_time > max_delay_time: delay_time = max_delay_time
+                        self.logger.info("delaying reconnect attempt # %s for %s seconds" % (self._reconnect_attempts,delay_time))
+                        
+                        self._reconnect_attempts += 1
+                        
+                        # we are no longer blocking on the ioloop so we cant block here too long
+                        # or we will be non-responsive to a shutdown request while waiting
+                        # check stop_request frequently
+                        delay_10_ms = delay_time * 100
+                        for i in range(delay_10_ms):
+                            if not self._stop_requested:
+                                time.sleep(0.01)
+                            else: break
+                        
+                # Connection has disconnected but automatic reconnect is disabled
+                # Not sure who would be crazy enough to roll this way
+                if not self._automatic_reconnect and self.keep_working:
+                    self.set_failed("connection failed; auto reconnect is disabled")
+                    self.stop("connection failed")
+                    break
+
+            except Exception as e:
+                self.log_exception(stacklevel=4)
+                self.set_failed("exception in run loop")
+                return
 
         # we have completed work in this method
         self.logger.debug('thread exiting')
@@ -472,6 +495,8 @@ class AsynchronousClient():
     # call this method if you would like to gracefully shut down the consumer
     # this will result in the thread exiting once the ioloop has completed
     def stop(self,reason=None):
+        
+        self.log_debug("asynchronousclient.stop() called")
         super().stop(reason)
         
         # No methods in this class, nor other threads are safe to interact 
@@ -482,12 +507,12 @@ class AsynchronousClient():
         #  there for a graceful shutdown, otherwise try closing the channel and
         #  then connection
         if hasattr(self,"stop_activity"):
-            if self._connection:
+            if self._connection and self._connection.is_open and not self._connection.is_closing:
+                self.log_debug("calling stop_activity with threadsafe callback")
                 self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
-        else:
-            # follow this path so that we may hook callbacks to continue the shutdown
-            #  if we happen to be stuck between a stage somehow
-            if self._channel and self._channel.is_open:
-                self._connection.ioloop.add_callback_threadsafe(self._channel.close())
-            elif self._connection and self._connection.is_open:
-                self._connection.ioloop.add_callback_threadsafe(self._connection.close())
+            else:
+                if not self._connection:
+                    self.log_warning("client.stop() called but self._connection = (%s)" % (type(self._connection)))
+                else:
+                    self.log_warning("client.stop() called but self._connection.is_open = %s, self._connection.is_closing=%s" 
+                        % (self._connection.is_open,self._connection.is_closing))

@@ -1,3 +1,4 @@
+import dsf.domain
 
 #
 # Message Processing Exceptions
