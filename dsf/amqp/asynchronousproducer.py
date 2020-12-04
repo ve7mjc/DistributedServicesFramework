@@ -30,10 +30,19 @@ class AsynchronousProducer(AsynchronousClient):
     # callback for message ack
     _enable_delivery_confirmations = True
     message_queue = Queue()
+
+    # if we are using this AMQP Producer via a logging handler
+    # we will enter a publish storm if there is any logging output
+    _logger_publisher = False
     
     def __init__(self, **kwargs):
         
-        self._exchange = kwargs.get("exchange",None)
+        self._exchange = kwargs.get("exchange", None)
+        
+        # NOT IMPLEMENTED!
+        # if we are using this AMQP Producer via a logging handler
+        # we will enter a publish storm if there is any logging output
+        self._logger_publisher = kwargs.get("logger_publisher", False)
         
         # Producer Specific Initialization
         self._deliveries = None
@@ -49,6 +58,7 @@ class AsynchronousProducer(AsynchronousClient):
     # Exchanges, Queues, and Bindings have been declared
     # Producer specific actions may now be performed
     def client_ready(self):
+        
         if self._enable_delivery_confirmations:
             self.enable_delivery_confirmations()
         else: 
@@ -56,9 +66,14 @@ class AsynchronousProducer(AsynchronousClient):
     
     # Called when the Producer is now considered ready to publish messages
     def producer_ready(self):
+        
         self.logger.debug("AMQP Producer is ready for message publishing")
         self._ready = True
 
+        # trigger the publish of any messages places in the queue while
+        #  the client was initializing, connecting, or disconnected
+        if self.can_publish():
+            self._connection.ioloop.add_callback_threadsafe(self.__publish_callback)
 
     # Called from base class AMQPClient prior to a connection is attempted
     # It is important to note that this will be called on reconnects
@@ -110,7 +125,7 @@ class AsynchronousProducer(AsynchronousClient):
             self._acked += 1
         elif confirmation_type == 'nack':
             self._nacked += 1
-            
+
         # if we are connected to a Consumer Queue with outstanding messages?
         # the consumer tag should follow along though so we do not refer to
         # delivery_tags from different consumer_tags
@@ -151,9 +166,9 @@ class AsynchronousProducer(AsynchronousClient):
     #            ))
 
             # return the message number so we can pass back
-            # as the delivery_tag
+            # as the delivery_tag           
             return self._message_number
-        else: 
+        else:
             self.log_warning("__do_basic_publish() called but cannot publish!")
             return None
 
@@ -164,7 +179,7 @@ class AsynchronousProducer(AsynchronousClient):
     def __publish_callback(self, message=None):
         
         # is this legit?
-        if not self._channel:
+        if not self.can_publish():
             self.logger.error('do_publish() returned as channel is not ready')
             if message: self.blocking_publish_response.put("error")
             return
@@ -210,7 +225,7 @@ class AsynchronousProducer(AsynchronousClient):
             # place message in outgoing Queue
             # if we are trying to do a blocking mode, there could in fact be messages
             # in the Queue already -- TODO
-            if not self.can_publish():
+            if not self.can_publish() and (self.is_failed() or self.is_stopped()):
                 self.log_warning("producer.publish() called but channel and connection are not avaiable")
 
             # todo, do a check to see if the channel is stopping or closing
@@ -233,9 +248,9 @@ class AsynchronousProducer(AsynchronousClient):
                     self._connection.ioloop.add_callback_threadsafe(self.__publish_callback)
                     # we are now going to exit as we are non-blocking and have 
                     # enqueued a message and alrtered the ioloop there are messages
-                else: 
+                else:
                     return True
-                    
+        
         except Exception as e:
             self.logger.error("producer::publish() %s" % e)
             self.log_exception()

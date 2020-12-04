@@ -21,7 +21,7 @@ from queue import Empty,Queue
 # - Monitor all components of Service
 #   - Watchdogs
 #   - Events
-# - Link to Remote Monitoring Servicse via AMQP
+# - Link to Remote Monitoring Services via AMQP
 # - Maintain comprehensive service state remotely
 class Supervisor(Component):
     
@@ -38,31 +38,41 @@ class Supervisor(Component):
     _eventlog = []
     
     _registered_components = []
+    service = None
     
     _logger_name = "supervisor"
     
     _heartbeats = {}
     
+    publish_queue = Queue()
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
         try:
+            # Proceed with Caution - ensure that events do not result in events
+            #  aka no recursion bombs
             self.kwconfig(kwargs,"monitor") # kw args namespace for modules
             self._amqp_producer = AsynchronousProducer(**kwargs,logger_name="supervisor.amqp_producer",exchange=self.kwconfig.get("publish_exchange"))
             self._amqp_consumer = AsynchronousConsumer(**kwargs,logger_name="supervisor.amqp_consumer",queue=self.kwconfig.get("control_queue"))
-
             self.register_periodic_task(self.check_watchdogs,0.5,name="check_watchdogs")
             # self.register_periodic_task(self.task_one,2,name="task_one")
             self.register_periodic_task(self.task_statistics_to_log,10,name="statistics_console")
+            
+            self.log_queue = dsf.domain.logging.queue
+            
         except Exception as e:
             self.log_exception()
         
     @property
-    def producer(self): return self._amqp_producer
+    def amqp_producer(self): return self._amqp_producer
         
     @property
-    def consumer(self): return self._amqp_consumer
+    def amqp_consumer(self): return self._amqp_consumer
         
+    def register_service(self,service_obj):
+        self.service = service_obj
+        self.log_debug("Registered Service %s" % service_obj.name)
+
     # add a watchdog that looks for a statistics call on a particular
     # field and times out when time is reached without activity
     def add_statistics_metric_watchdog(self, metric_key, timeout_secs):
@@ -76,7 +86,6 @@ class Supervisor(Component):
 
     # called every time period
     def do_task(self): 
-        #if self.__statistics:
         for metric_type in self.statistics.metrics_types:
             self.log_debug("%s: %s" % (metric_type, self.statistics.get_metric(metric_type)))
     
@@ -129,16 +138,28 @@ class Supervisor(Component):
 #        if self.keep_running:
 #            self.producer.publish(routing_key="monitor.status",body="testing!",blocking=True)
 
+    def do_log_queue(self):
+        while True:
+            try:
+                gelfmsg = self.log_queue.get_nowait()
+                gelfmsg.host = self.service.name
+                if gelfmsg._logger_name != self._amqp_producer.logger_name:
+                    self.amqp_producer.publish(exchange="services",routing_key="services.logs",body=gelfmsg.to_json())   
+                # exchange, routing_key, body, properties, blocking
+                #
+                #print("log_msg = %s" % gelfmsg.to_json())
+            except Empty: break
+
     def process_component_events(self):
         # Called from thread
         while True:
             try:
                 event = dsf.domain.component_events.get_nowait()
+                #if event.data["type"] != ComponentEvent.Heartbeat.value[0]:
+                event.data["service"] = self.service.name
+                self.amqp_producer.publish(exchange="services",routing_key="services.events",body=event.to_json())
+                #self.log_info("Received \"%s\" from %s" % (event.data["type"],event.data["component"]))
             except Empty: break
-
-            if event.data["type"] == ComponentEvent.Heartbeat:
-                print("detected heartbeat!")
-                print(event.to_json())
 
     # Called from Component.thread.start(target=_run())
     """ ### THREAD SAFETY ### """
@@ -159,26 +180,32 @@ class Supervisor(Component):
 
         last_report_run = datetime.now().timestamp()
 
+        self.log_info("Supervisor running")
+
         """ LOOP """
-        try:
-            while self.keep_working:
+        while self.keep_working:
+            try:
                 self.heartbeat()
                 self.process_component_events()
-                #self.do_task_scheduling()
-        except Exception as e:
-            print("exception in service loop")
-            self.log_exception()        
+                self.do_log_queue()
+            except Exception as e:
+                print("exception in service loop")
+                self.log_exception()
+            #self.do_task_scheduling()
+ 
             
         """ SHUTDOWN """
         
         # cleanup
-        self.producer.stop()
-        self.consumer.stop()
+        self.amqp_producer.stop()
+        self.amqp_consumer.stop()
 
         self.log_debug("passed amqp client stops")
         
-        self.producer.join(1)
-        self.consumer.join(1)
+        self.amqp_producer.join(1)
+        self.amqp_consumer.join(1)
+        
+        self.log_debug("supervisor leaving thread run method")
         
     """ ### THREAD SAFETY ### """
     

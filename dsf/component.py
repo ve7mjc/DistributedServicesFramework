@@ -132,8 +132,8 @@ class Component():
                 self._stop_required = True
                 self._thread = Thread(target=self._run,name="%s-thread" % self.name)
 
-            logger_name = kwargs.get("logger_name", self.get("_logger_name", self.name))
-            self._logger = dsf.domain.logging.get_logger(logger_name)
+            self._logger_name = kwargs.get("logger_name", self.get("_logger_name", self.name))
+            self._logger = dsf.domain.logging.get_logger(self._logger_name)
             self.set_loglevel(kwargs.get("loglevel","debug"))
             
             # ** Avoid calls which may result in emitting events or produce 
@@ -220,7 +220,7 @@ class Component():
             self.log_warning("report_event() unable to central events queue (%s type)" % 
                 type(self._central_events_queue).__name__)
         try:
-            if type(event_type) is ComponentEvent:
+            if isinstance(event_type,EventType):
                 message = None
                 if len(args): message = args[0]
                 event = Event(component_name=self.name,event_type=event_type,message=message)
@@ -255,6 +255,9 @@ class Component():
         
     @property
     def logger(self): return self._logger
+        
+    @property
+    def logger_name(self): return self._logger_name
         
     def set_logger_name(self,name):
         if self._logger: self._logger = dsf.domain.logging.get_logger(name)

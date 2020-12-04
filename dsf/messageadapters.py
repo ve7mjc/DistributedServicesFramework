@@ -3,6 +3,7 @@
 import dsf.domain
 from dsf.component import Component
 from dsf import exceptionhandling
+from dsf.event import *
 
 import threading
 import logging
@@ -138,3 +139,4 @@ class MessageOutputAdapterConsoleWriter(MessageOutputAdapter,Component):
         
     def write(self,message):
         print("ConsoleWriter: %s" % message)
+        self.report_event(OutputAdapterEvent.Delivered)

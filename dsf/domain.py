@@ -27,7 +27,9 @@ Logging
 """
 
 import logging as pylogging
+from logging.handlers import QueueHandler, QueueListener
 from copy import copy # log record
+import json
 
 """
 """
@@ -69,6 +71,70 @@ class PatternAcceptanceFilter:
 
         return False # default if no match
 
+from collections import UserDict
+
+# 'args', 'asctime', 'created', 'exc_info', 'exc_text', 'filename', 'funcName', 
+# 'getMessage', 'levelname', 'levelno', 'lineno', 'message', 'module', 'msecs', 
+# 'msg', 'name', 'pathname', 'process', 'processName', 'relativeCreated', 
+# 'stack_info', 'thread', 'threadName']
+class GelfLogMessage(dict):
+    
+    def add_item(self,attr_name,var,test=None):
+        if var is not test:
+            setattr(self,attr_name,var)
+    
+    def __init__(self,**kwargs):
+        self.version = "1.1" # must include 
+        if "logrecord" in kwargs:
+            record = kwargs.get("logrecord")    
+            if record:
+                self.host = record.name # must include
+                self.short_message = record.msg # must include
+                # optional
+                self.timestamp = datetime.strptime(record.asctime,"%Y-%m-%d %H:%M:%S,%f").timestamp()
+                self.level = record.levelno
+                self.line = record.lineno
+                self.file = record.filename
+                self._logger_name = record.name
+                
+                self.add_item("_exc_info",record.exc_info)
+                self.add_item("_exc_text",record.exc_text)
+                self.add_item("_process",record.process)
+                self.add_item("_threadName",record.threadName)
+
+    def clear_nulls(self):
+        attrs = copy(vars(self))
+        for attr in attrs:
+            val = getattr(self,attr)
+            if val is None or val is "" or val is 0:
+                delattr(self,attr)
+    
+    def to_json(self):
+        return json.dumps(self.__dict__)
+
+#    @property
+#    def __dict__(self):
+#        return super().__dict__
+#        dict.__dict__
+
+      
+#    def __dict__(self):
+#        return self.__dict__
+#        for attrib in self:
+#            return attrib
+
+class GelfQueueHandler(QueueHandler):
+    
+    def __init__(self,queue):
+        super().__init__(queue)
+    
+    # Prepares a record for queuing. The object returned by this method is enqueued.
+    # The base implementation formats the record to merge the message, 
+    #  arguments, and exception information, if present. It also removes 
+    #  unpickleable items from the record in-place.
+    def prepare(self,record):
+        gelf = GelfLogMessage(logrecord=record)
+        return gelf
 
 # Highlighter -- Highlight log lines which contain pattern
 class ColoredFormatter(pylogging.Formatter):
@@ -214,13 +280,18 @@ class LoggingSystem():
         root_logger.addHandler(console_handler)
         
         # Add File Handler
-        file_format = '%(asctime)s %(name)s %(levelname)s %(message)s'
+        file_format = '%(asctime)s %(name)s %(levelname)s %(filename)s:%(lineno)d %(message)s'
         #root_logger_formatting = '%(asctime)s ' + self.name + '.%(name)s %(levelname)s %(message)s'
         file_formatter = pylogging.Formatter(file_format)
         file_handler = pylogging.FileHandler('%s.log' % app_basenamenosuff)
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
-
+        
+        # Queue Log Handler
+        self.queue = Queue()
+        gelf_queue_handler = GelfQueueHandler(self.queue)
+        root_logger.addHandler(gelf_queue_handler)
+   
         # defaults
         self.add_highlighter("level","error","highlight_line",termcolor.BG_ERROR)
         self.add_highlighter("level","critical","highlight_line",termcolor.BG_ERROR)
@@ -307,9 +378,16 @@ Service
 """
 
 _services = []
+service = None
 
+#  only designed to support a single Service at this time
 def register_service(serviceobj):
+    service = serviceobj
     _services.append(serviceobj)
+    supervisor.register_service(serviceobj)
+    
+def services():
+    return _services
 
 """
 CONFIG

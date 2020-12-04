@@ -3,7 +3,7 @@
 #
 # Future - add other Reader and Writer classes to increase adapter flexibility 
 #
-# Design Objectives:
+# Objectives:
 # - Data integrity assurance from input to output (no data loss)
 #   Transactional approach to message processing whereby Queue Message Delivery 
 #   Acknowledgement mechanisms are used to ensure that messages retrieved from 

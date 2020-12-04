@@ -41,6 +41,8 @@ class Service(Component):
             # Process keyword arguments from class initializer
             dsf.domain.config.set_required(self.get("_config_required", False))
             dsf.domain.config.load()
+            
+            dsf.domain.register_service(self)
 
         except Exception as e:
             self.log_exception()
