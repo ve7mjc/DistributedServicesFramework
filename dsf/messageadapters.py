@@ -1,4 +1,4 @@
-#from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
+from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
 
 import dsf.domain
 from dsf.component import Component
@@ -63,12 +63,12 @@ class MessageInputAdapter(MessageAdapter):
             print("no message queue for input adapter!")
 
 # Double check MRO concept here!
-#class MessageInputAdapterAmqpConsumer(AsynchronousConsumer,MessageInputAdapter):
-#    
-#    _adapter_type = "AMQPConsumer"
-#    
-#    def __init__(self,**kwargs):
-#        super().__init__(**kwargs)
+class MessageInputAdapterAmqpConsumer(AsynchronousConsumer,MessageInputAdapter):
+    
+    _adapter_type = "AMQPConsumer"
+    
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
 
 class SimulatedMessageInputAdapter(MessageInputAdapter,Component):
     
@@ -104,25 +104,25 @@ class MessageOutputAdapter(MessageAdapter):
     def write(self, message):
         raise Exception("write not implemented in MessageOutputAdapter child class!")
 
-#class MessageOutputAdapterAmqpProducer(AsynchronousProducer,MessageOutputAdapter):
-#    
-#    _adapter_type = "AmqpProducer"
-#    
-#    _publish_exchange = "test"
-#    _publish_routing_key = None
-#    _blocking = True
-#    
-#    def __init__(self,**kwargs):
-#        super().__init__(**kwargs)
-#        
-#    def write(self, message):
-#        kwargs = {}
-#        kwargs["blocking"] = self._blocking
-#        kwargs["exchange"] = self._publish_exchange
-#        kwargs["routing_key"] = "test"
-#        kwargs["body"] = message
-#        # properties
-#        self.publish(**kwargs)
+class MessageOutputAdapterAmqpProducer(AsynchronousProducer,MessageOutputAdapter):
+    
+    _adapter_type = "AmqpProducer"
+    
+    _publish_exchange = "test"
+    _publish_routing_key = None
+    _blocking = True
+    
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        
+    def write(self, message):
+        kwargs = {}
+        kwargs["blocking"] = self._blocking
+        kwargs["exchange"] = self._publish_exchange
+        kwargs["routing_key"] = "test"
+        kwargs["body"] = message
+        # properties
+        self.publish(**kwargs)
 
 # Message --> Console Writer
 # blocking? we can consider the console stream rate to be insignificant

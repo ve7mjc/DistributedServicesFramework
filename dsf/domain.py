@@ -3,8 +3,12 @@ print("\033[92m" + "##### START MARKER" + "\033[0m")
 from pathlib import Path
 from os import path
 from sys import argv, stdout
+import sys # for sys.path
 
 from dsf import utilities
+
+logging_gelf_udp_host = "44.135.208.228"
+logging_gelf_udp_port = 12201
 
 # vars
 monitor = None
@@ -22,6 +26,12 @@ app_dirnamestr = str(app_path.parent)
 app_extensionstr = str(app_path.suffix)
 app_basenamenosuff = app_basenamestr.split(".")[0]
 
+lib_path = Path(__file__)
+lib_dirnamestr = str(lib_path.parent)
+
+# add the folder this file resides in to the search path
+sys.path.append(lib_dirnamestr)
+
 """
 Logging 
 """
@@ -30,6 +40,7 @@ import logging as pylogging
 from logging.handlers import QueueHandler, QueueListener
 from copy import copy # log record
 import json
+from pygelf import GelfUdpHandler # GelfTcpHandler, GelfTlsHandler, GelfHttpHandler
 
 """
 """
@@ -106,7 +117,7 @@ class GelfLogMessage(dict):
         attrs = copy(vars(self))
         for attr in attrs:
             val = getattr(self,attr)
-            if val is None or val is "" or val is 0:
+            if val is None or val == "" or val == 0:
                 delattr(self,attr)
     
     def to_json(self):
@@ -135,6 +146,7 @@ class GelfQueueHandler(QueueHandler):
     def prepare(self,record):
         gelf = GelfLogMessage(logrecord=record)
         return gelf
+
 
 # Highlighter -- Highlight log lines which contain pattern
 class ColoredFormatter(pylogging.Formatter):
@@ -287,16 +299,14 @@ class LoggingSystem():
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
         
-        # Queue Log Handler
-        self.queue = Queue()
-        gelf_queue_handler = GelfQueueHandler(self.queue)
-        root_logger.addHandler(gelf_queue_handler)
-   
-        # defaults
+        # GELF Logger
+        root_logger.addHandler(GelfUdpHandler(host=logging_gelf_udp_host, 
+            port=logging_gelf_udp_port, debug=True, compress=False))
+
+        # default color highlighting in console
         self.add_highlighter("level","error","highlight_line",termcolor.BG_ERROR)
         self.add_highlighter("level","critical","highlight_line",termcolor.BG_ERROR)
         self.add_highlighter("level","warning","highlight_line",termcolor.BG_WARNING)
-        #self.console_formatter.add_highlighter(50,"level","info","highlight_line",termcolor.BG_INFO)
 
         # By default the root logger is set to WARNING and all loggers you define
         # Setting the root logger to DEBUG (lowest possible value) will result in 
@@ -490,10 +500,27 @@ component_events = Queue()
 #        return agent
 
 def init_supervisor(**kwargs):
-    global supervisor
-    from dsf.supervisor import Supervisor
-    supervisor = Supervisor(**kwargs)
-    supervisor.start()
+    import time
+    try:
+        global supervisor
+        from dsf.supervisor import Supervisor
+        
+        supervisor = Supervisor(**kwargs)
+        supervisor.start()
+
+        blocking_secs = kwargs.get("blocking_secs",None)
+        if blocking_secs:
+            wait_start_time = utilities.utc_timestamp()
+            while not supervisor.is_ready():
+                if supervisor.is_failed():
+                    print("supervisor is failed; bailing!")
+                    return
+                time.sleep(0.05)
+                if (utilities.utc_timestamp()-wait_start_time) >= blocking_secs:
+                    print("timeout!")
+                    break
+    except Exception as e:
+        print(e)
     
     # we can now go find all the components that may have started before us
 #    for component in _components:

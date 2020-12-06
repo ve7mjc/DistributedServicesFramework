@@ -31,15 +31,16 @@ class Service(Component):
     def __init__(self,**kwargs):
         try:
             # Initialize and Configure Supervisor
+            kwargs["blocking_secs"]=5
             dsf.domain.init_supervisor(**kwargs)
             
             super().__init__(**kwargs)
             
             # Set handler for SIGINT
             signal.signal(signal.SIGINT, self.signal_handler)
-
+            
             # Process keyword arguments from class initializer
-            dsf.domain.config.set_required(self.get("_config_required", False))
+            dsf.domain.config.set_required(self.get("_config_required",False))
             dsf.domain.config.load()
             
             dsf.domain.register_service(self)

@@ -1,5 +1,12 @@
 import dsf.domain
 
+
+class ComponentStartFailed(Exception):
+    pass
+    
+class ComponentStartTimeout(Exception):
+    pass
+
 #
 # Message Processing Exceptions
 
@@ -26,3 +33,5 @@ class MessageAdapterStartupFailed(Exception):
     
 class MessageAdapterStopTimeout(Exception):
     pass
+    
+    

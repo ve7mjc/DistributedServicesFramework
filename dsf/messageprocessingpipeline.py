@@ -62,7 +62,6 @@ class MessageProcessingPipeline(Service):
     
     def __init__(self, **kwargs):
         self._logger_name = "pipeline"
-        # get logger, service monitor, name, etc
         super().__init__(**kwargs)
 
     # Initialize a Message Processor
@@ -73,7 +72,7 @@ class MessageProcessingPipeline(Service):
         if processor_name in self._message_processors:
             processor = self._message_processors[processor_name]
             for amqp_acceptance_filter in processor._amqp_input_message_routing_key_acceptance_filters:
-                self.logger.info("Message Processor %s registered acceptance filter: amqp_routing_key=%s" % (processor_name,amqp_acceptance_filter))
+                self.logger.info("%s registered acceptance filter: amqp_routing_key=%s" % (processor_name,amqp_acceptance_filter))
         else:
             self.log_error("requested processor by name \"%s\" does not exist or is not loaded!" % processor_name)
 
@@ -81,34 +80,57 @@ class MessageProcessingPipeline(Service):
     # class from a supplied module
     # - Instantiate the class, do checks (including tests), and return the
     #   handle to the processor or None on any failure
-    def load_message_processor(self, module_name):
+    def load_message_processor(self,module,name=None):
         try:
-            Processor = getattr(importlib.import_module(module_name), "Processor") # module.submodule
+            Processor = getattr(importlib.import_module(module), "Processor") # module.submodule
             if not issubclass(Processor,MessageProcessor):
-                self.log_warning("%s.Processor() is not a subclass of MessageProcessor!" % module_name)
+                self.log_warning("%s.Processor() is not a subclass of MessageProcessor!" % name)
                 return None
             processor = Processor(self) # instantiate - pass self in for parent
             if processor.do_checks(): 
-                self.log_warning("%s.Processor.do_checks() has failed!" % module_name)
+                self.log_warning("%s.Processor.do_checks() has failed!" % name)
                 return None
             return processor
         except Exception as e:
             self.log_exception()
+            self.set_failed(name)
             return None
     
     # Dynamically load, check, and register MessageProcessors
     # - call MessageProcessor::do_checks()
     # - can call MessageProcessor::valid any time for invalidated conditions
-    def add_message_processor(self, module_name):
-        processor = self.load_message_processor(module_name)
-        if processor:
-            self._message_processors[processor.processor_name] = processor
-            self.registerchild(processor)
-            self.log_info("Loaded Message Processor %s.Processor, name='%s'" % (module_name,processor.processor_name))
-            self.initialize_message_processor(processor.processor_name) 
-        else:
-            self.log_error("Error loading and validating Message Processor %s" % module_name)
-    
+    def add_message_processor(self, module):
+        
+        # best effort to assist report in case of exception
+        if isinstance(module,str): name = module
+        else: name = type(module).__name__
+        
+        if self.is_failed():
+            self.log_debug("refusing to add_message_processor(%s) as we are failed!" % name)
+            return
+            
+        try:
+            if isinstance(module,MessageProcessor):
+                processor = module
+            elif isinstance(module,str): 
+                processor = self.load_message_processor(module,name)
+            else: processor = None
+
+            if processor:
+                # todo - consider problem that initialization could fail which
+                #  would leave the processor instance in the registry
+                self._message_processors[processor.processor_name] = processor
+                self.registerchild(processor)
+                self.initialize_message_processor(processor.processor_name)
+                self.log_info("Loaded Message Processor %s.Processor, name='%s'" % (module,processor.processor_name))                
+            else:
+                self.log_error("Error loading and validating Message Processor %s" % name)
+
+        except Exception as e:
+            
+            self.log_exception()
+            self.set_failed(name)
+ 
     @property
     def message_processors(self):
         return self._message_processors
@@ -118,9 +140,10 @@ class MessageProcessingPipeline(Service):
     # adapter_type - can be an instance of a class which inherits 
     #  MessageInputAdapter or MessageOutputAdapter, or a string containing
     #  a MessageAdapter known to this class
+    # if 'class_name' kwarg is passed, it will load a different
     def add_message_adapter(self,adapter_type,**kwargs):
 
-        if self.stop_requested:
+        if self.is_failed() or self.stop_requested:
             self.log_info("Refusing to add Message Adapter(s) as we are failed or stopped!")
             return
 
@@ -138,7 +161,7 @@ class MessageProcessingPipeline(Service):
                 kwargs["logger_name"] = "service.pipeline.adapters.%s" % adapter_type_str.lower()
                 if adapter_type == "amqpconsumer": # AmqpConsumer
                     kwargs["message_queue"] = self._input_message_queue
-                    kwargs["statistics"] = self.statistics
+                    #kwargs["statistics"] = self.statistics
                     adapter = MessageInputAdapterAmqpConsumer(**kwargs)
                 elif adapter_type == "amqpproducer": # AmqpProducer
                     # attach Statistics and ServiceMonitor hooks?                
@@ -148,7 +171,27 @@ class MessageProcessingPipeline(Service):
                 elif adapter_type == "consolewriter":
                     adapter = MessageOutputAdapterConsoleWriter(**kwargs)
                 else:
-                    raise Exception("type is not registered!")
+                    # attempt to locate a module and class
+                    try:
+                        class_name = kwargs.get("class_name","Adapter")
+                        self.log_debug("attempting to load %s.%s" % (adapter_type,class_name))
+                        module = getattr(importlib.import_module("%s" % adapter_type), class_name) # module.submodule
+                        adapter = module()
+                        if not isinstance(adapter, MessageAdapter):
+                            self.log_warning("%s is not an instance or sub-class of MessageAdapter!" % (type(adapter).__name__))
+                    except ModuleNotFoundError as e:
+                        self.log_error("module not found")
+                    except Exception as e:
+                        self.log_exception()
+                        self.log_warning("unable to load module")
+                        raise Exception(e)
+                    
+                        #self.log_warning("%s.Processor() is not a subclass of MessageProcessor!" % name)
+                        #return None
+                    #processor = Processor(self) # instantiate - pass self in for parent
+                    
+                    # "timescaleadapters.writer"
+                    #raise Exception("type is not registered!")
             else:
                 raise Exception("adapter must derive from class Message{Input|Output}Adapter!")
 
@@ -168,6 +211,7 @@ class MessageProcessingPipeline(Service):
             self.logger.debug("Added <%s> Message %s Adapter" % (adapter_type_str,adapter_direction))
 
         except Exception as e:
+            
             self.log_exception()
             self.stop(Exception("failed to add Message Adapter \"%s\": %s" % (adapter_type_str,e.__str__())))
 
@@ -194,6 +238,10 @@ class MessageProcessingPipeline(Service):
         self.start_message_adapters("output",blocking,timeoutsecs)
         
     def start_message_adapters(self,adapters_type="all",blocking=False,timeoutsecs=3):
+        
+        if self.is_failed() or self.stop_requested:
+            self.log_info("Refusing to Start Adapter(s) as we are failed or stopped!")
+            return
         
         adapters = None
         
@@ -448,12 +496,12 @@ class MessageProcessingPipeline(Service):
         except MessageTypeUnsupportedError as e:
             self.logger.info(e)
             self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
-            self.statistics.metric("messages_processed_unknown_type")
+            #self.statistics.metric("messages_processed_unknown_type")
             
         except MessageProcessingFailedError as e:
             self.logger.warning("Message processing failed for msg with routing_key=%s: %s" % (input_message_routing_key,e))
             self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
-            self.statistics.metric("messages_processed_failed_error")
+            #self.statistics.metric("messages_processed_failed_error")
         
         except Exception as e:
             self.log_exception()

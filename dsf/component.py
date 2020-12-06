@@ -159,6 +159,8 @@ class Component():
             self.report_event(ComponentEvent.Created)
             
         except Exception as e:
+            component_name = getattr(self,_name,self.__class__.__name__)
+            self.set_failed(component_name)
             self.log_exception()
             
     # Get class attribute; return default if attribute not exists OR is None
@@ -237,12 +239,12 @@ class Component():
     # Optional reason. Use this method to ensure necessary steps are taken
     # Call self.stop() to log an exception and request a stop as this method
     #  will be called afterwards
-    def set_failed(self, reason):
+    def set_failed(self, component="not specified."):
         self._ready = False
         self._failed = True
-        self._failed_reason = reason
-        self.log_error("component failed: %s" % reason)
-        self.report_event(ComponentEvent.Failed,reason)
+        self._failed_reason = component
+        self.log_error("component failed: %s" % component)
+        self.report_event(ComponentEvent.Failed,component)
         self.stop()
         
     # An unrecoverable condition is present which prevents 
@@ -334,12 +336,15 @@ class Component():
             self.log_debug("start() called but already started")
             return
 
+        # set this here so that if the thread crashes, it will not complain
+        #  about not being started
+        self._started = True
+
         # Start thread, or if no thread, consider us ready
         if self._threaded: self.thread.start()
         else: 
             self._ready = True
-        
-        self._started = True
+
         self.report_event(ComponentEvent.Started)
     
     @property

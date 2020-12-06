@@ -32,7 +32,6 @@ class Event():
     data = {}
     
     def __init__(self,component_name=None,event_type=None,message=None):
-        
         self.data["timestamp"] = utilities.utc_timestamp()
         self.data["component"] = component_name
         self.data["type"] = event_type.value[0]
@@ -40,3 +39,6 @@ class Event():
         
     def to_json(self):
         return json.dumps(self.data)
+        
+    @property
+    def timestamp(self): return self.data["timestamp"]
