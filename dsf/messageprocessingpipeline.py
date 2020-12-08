@@ -39,6 +39,9 @@ from dsf.exceptions import *
 from dsf.messageprocessor import MessageProcessor
 from dsf import exceptionhandling, utilities
 
+from dsf.message import Message
+#from dsf.amqp.amqpmessage import AmqpMessage # for checking
+
 # Stay asyncronous - stay frosty
 class MessageProcessingPipeline(Service):
 
@@ -54,8 +57,13 @@ class MessageProcessingPipeline(Service):
     _output_message_queue = Queue()
     
     # Registered message types for assigning appropriate processors
-    # disused? = throws an exception if removed tho
-    __message_types = {}
+    # Instead of message_types, instead for now - we will use a message
+    #  acceptance filter, as it is not important that the processor
+    #  manages a list of known types!
+    #__message_types = {}
+    
+    # format: routing_key_pattern, processor obj
+    _processor_acceptance_filters = []
     
     # dict of message processors
     _message_processors = {}
@@ -69,24 +77,34 @@ class MessageProcessingPipeline(Service):
     # - Message Types
     # - Acceptance and Rejection Filters
     def initialize_message_processor(self, processor_name):
-        if processor_name in self._message_processors:
-            processor = self._message_processors[processor_name]
-            for amqp_acceptance_filter in processor._amqp_input_message_routing_key_acceptance_filters:
-                self.logger.info("%s registered acceptance filter: amqp_routing_key=%s" % (processor_name,amqp_acceptance_filter))
-        else:
+        
+        if processor_name not in self._message_processors:
             self.log_error("requested processor by name \"%s\" does not exist or is not loaded!" % processor_name)
+            return True
+
+        processor = self._message_processors[processor_name]
+        # AMQP Routing Key specific!
+        if hasattr(processor,"_amqp_input_message_routing_key_acceptance_filters"):    
+            for amqp_acceptance_filter in processor._amqp_input_message_routing_key_acceptance_filters:
+                self._processor_acceptance_filters.append({ 
+                    "routing_key_pattern":amqp_acceptance_filter,
+                    "processor":processor })
+                self.logger.info("%s registered acceptance filter: amqp_routing_key=%s" % (processor_name,amqp_acceptance_filter))
+
+        return False
 
     # Dynamically load message processor Module.Processor(MessageProcessor)
     # class from a supplied module
     # - Instantiate the class, do checks (including tests), and return the
     #   handle to the processor or None on any failure
-    def load_message_processor(self,module,name=None):
+    def load_message_processor(self,module,**kwargs):
         try:
+            name = kwargs.get("name","")
             Processor = getattr(importlib.import_module(module), "Processor") # module.submodule
             if not issubclass(Processor,MessageProcessor):
                 self.log_warning("%s.Processor() is not a subclass of MessageProcessor!" % name)
                 return None
-            processor = Processor(self) # instantiate - pass self in for parent
+            processor = Processor(self,**kwargs) # instantiate - pass self in for parent
             if processor.do_checks(): 
                 self.log_warning("%s.Processor.do_checks() has failed!" % name)
                 return None
@@ -99,11 +117,12 @@ class MessageProcessingPipeline(Service):
     # Dynamically load, check, and register MessageProcessors
     # - call MessageProcessor::do_checks()
     # - can call MessageProcessor::valid any time for invalidated conditions
-    def add_message_processor(self, module):
+    def add_message_processor(self,module,**kwargs):
         
         # best effort to assist report in case of exception
         if isinstance(module,str): name = module
         else: name = type(module).__name__
+        if "name" not in kwargs: kwargs["name"] = name
         
         if self.is_failed():
             self.log_debug("refusing to add_message_processor(%s) as we are failed!" % name)
@@ -113,7 +132,7 @@ class MessageProcessingPipeline(Service):
             if isinstance(module,MessageProcessor):
                 processor = module
             elif isinstance(module,str): 
-                processor = self.load_message_processor(module,name)
+                processor = self.load_message_processor(module,**kwargs)
             else: processor = None
 
             if processor:
@@ -122,7 +141,8 @@ class MessageProcessingPipeline(Service):
                 self._message_processors[processor.processor_name] = processor
                 self.registerchild(processor)
                 self.initialize_message_processor(processor.processor_name)
-                self.log_info("Loaded Message Processor %s.Processor, name='%s'" % (module,processor.processor_name))                
+                self.log_info("Loaded Message Processor %s.Processor, name='%s'" % (module,processor.processor_name))
+                return processor
             else:
                 self.log_error("Error loading and validating Message Processor %s" % name)
 
@@ -209,13 +229,13 @@ class MessageProcessingPipeline(Service):
             # Message Adapter composition and callbacks
             self.registerchild(adapter)
             self.logger.debug("Added <%s> Message %s Adapter" % (adapter_type_str,adapter_direction))
+            return adapter
 
         except Exception as e:
             
             self.log_exception()
             self.stop(Exception("failed to add Message Adapter \"%s\": %s" % (adapter_type_str,e.__str__())))
 
-        
     @property
     def message_output_adapters(self): return self._output_adapters
     
@@ -325,11 +345,11 @@ class MessageProcessingPipeline(Service):
 
     # pass keyword arguments straight in to message_type dict
     # examples: bind_pattern, processor
-    def add_message_type(self, message_type, **kwargs):
-        self.__message_types[message_type] = {}
-        for key in kwargs.keys():
-            self.logger.debug("adding message_type['%s']['%s'] = %s" % (message_type, key, kwargs[key]))
-            self.__message_types[message_type][key] = kwargs[key]
+#    def add_message_type(self, message_type, **kwargs):
+#        self.__message_types[message_type] = {}
+#        for key in kwargs.keys():
+#            self.logger.debug("adding message_type['%s']['%s'] = %s" % (message_type, key, kwargs[key]))
+#            self.__message_types[message_type][key] = kwargs[key]
 
     @property
     def valid_message_processors_loaded_num(self):
@@ -341,27 +361,27 @@ class MessageProcessingPipeline(Service):
     # Get message_type for supplied routing_key or None if no match
     # match provided Message routing_key against list of known product 
     # binding_patterns and return the type if matched or None if no match
-    def routing_key_message_type(self, routing_key):
-        for message_type in self.__message_types:
-            if "bind_key" in self.__message_types[message_type]:
-                if amqputilities.match_routing_key(routing_key, self.__message_types[message_type]['bind_key']):
-                    return message_type
-        return None # if nothing found
+#    def routing_key_message_type(self, routing_key):
+#        for message_type in self.__message_types:
+#            if "bind_key" in self.__message_types[message_type]:
+#                if amqputilities.match_routing_key(routing_key, self.__message_types[message_type]['bind_key']):
+#                    return message_type
+#        return None # if nothing found
     
     # Return a loaded Message Processor which claims to be able to process 
     # a message with provided routing_key
-    def processor_for_amqp_routing_key(self, routing_key):
-        try:
-            for processor_key in self._message_processors:
-                processor = self._message_processors[processor_key]
-                for pattern in processor._amqp_input_message_routing_key_acceptance_filters:
-                    if amqputilities.match_routing_key(routing_key, pattern):
-                        #self.logger.debug("returning processor '%s' for routing_key %s" % (processor.processor_name,routing_key))
-                        return processor
-            self.logger.info("no processor found for routing_key")
-            return None
-        except Exception as e:
-            self.log_exception()
+    # If there are no defined routing keys, return the only processor
+    def processor_for_routing_key(self, routing_key):
+        
+        for acc_filter in self._processor_acceptance_filters:
+            if amqputilities.match_routing_key(routing_key, acc_filter["routing_key_pattern"]):
+                self.log_debug("returning processor '%s' for routing_key %s" % (processor.processor_name,routing_key))
+                return acc_filter["processor"]
+
+        self.log_debug("no processor found for routing_key=%s; providing default" % routing_key)
+        if len(self._message_processors) > 0:
+            for processor in self._message_processors:
+                return self._message_processors[processor]
 
     # we are assured the message_type is a valid message type or None
     # however a known message_type may not have a processor
@@ -407,10 +427,11 @@ class MessageProcessingPipeline(Service):
             raise Exception("_do_amqp_publish error: %s" % e)
         return True
 
-    def write_message_out(self,message):
-        for adapter in self.message_output_adapters:
-            adapter.write(message)
-
+    def write_message_out(self,amqp_message):
+        for adapter in self._output_adapters:
+            self.log_debug("Writing AMQP Message; routing_key=%s to %s" % (amqp_message.routing_key,adapter.name))
+            return adapter.write(amqp_message)
+            
     # THREADED WORK METHOD
     # Do a single message in, process, and message out
     # Called from while.keep_working thread.run() worker
@@ -420,64 +441,41 @@ class MessageProcessingPipeline(Service):
             # block on thread-safe message queue with a small timeout to ensure
             # the loop rate remains high in case we wanted to do other tasks
             message = self._input_message_queue.get(block=True, timeout=0.05)
-            
-            if type(message).__name__ == "amqpmessage":
-                # Note consumer and delivery tags so we follow up with message
-                # acknowledgements to the source AMQP Consumer. We are making an 
-                # assumption here that we are working with a valid AMQP message
-                input_message_routing_key = input_message.routing_key
-                input_message_consumer_tag = input_message.basic_deliver.consumer_tag
-                input_message_delivery_tag = input_message.basic_deliver.delivery_tag
-                input_message_type = self.routing_key_message_type(input_message.routing_key)
 
-                # Reject now if the input_message_type is unknown as we do not 
-                # have knowledge of the type nor a matching processor
+            if isinstance(message, Message) and message.type.code == "amqp":
+ 
+                # Note consumer and delivery tags so we follow up with message
+                # acknowledgements to the source AMQP Consumer
+                message_delivery_tag = message.method.delivery_tag
+                message_consumer_tag = message.method.consumer_tag
+                message_routing_key = message.routing_key
                 
                 # Retrieve a MessageProcessor which advertises it can process this Message
-                processor = self.processor_for_amqp_routing_key(input_message_routing_key)
-                if not processor and not input_message_type:
-                    raise MessageTypeUnsupportedError("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
-                    
-                # Process Message and perform follow-on actions
-                #processor_output = self._process_message(input_message, input_message_type)
+                processor = self.processor_for_routing_key(message_routing_key)
+                if not processor:
+                    raise MessageTypeUnsupportedException("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
+
+                outmsg = processor.process_message(message)
+ 
+                # We communicate our acknowledgement intention through the Exception
+                # eg. MessageProcessorException.ack = {None,True,False}
                 
-                # Message Pre-processing
-                # Generally processing of a message which may be common to all message types
-                #intermediary_data = self._pre_process(input_message, input_message_routing_key)
-                # bypass preprocessor
-
-                # Final processing with the MessageProcessor
-                # Note we are adding a proces_method(data) method -- this is an assumption
-                message = processor.process_message(message)
-            
-            else: 
-                pass
-
             # Pipeline test mode
 #                if self.test_mode("pipeline_no_output"):
 #                    self.logger.info("test_mode(pipeline_no_output) is set, no output!")
 #                    self.logger.info(processor_output)
 #                    return
 
-            if len(self.message_output_adapters) != 1: print("CONFUSED. we have zero or more than one output adapter!")
+            if len(self.message_output_adapters) != 1: 
+                print("CONFUSED. we have zero or more than one output adapter!")
 
             # Write Message to MessageOutputAdapter(s)
-            self.write_message_out(message)
+            response = self.write_message_out(outmsg) # blocking publish
+            if response == "ack":
+                self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
+                self.log_info("processed and published message; requested ACK; %s" % message_routing_key)
+                self.report_event(PipelineEvent.CompletedMessage)
 
-#            if processor_output is None:
-#                raise MessageProcessingFailedError("processer output is NoneType!")
-#        
-#            # Create AmqpMessage for flight
-#            if type(processor_output) == 'AmqpMessage':
-#                output_amqp_message = processor_output
-#            else:
-#                output_amqp_message = AmqpMessage(body=processor_output)
-#            
-#            # we are allowing the processor to specify the publish exchange by
-#            # supplying an exchange property of the passed Amqp.Message object
-#            output_amqp_message.exchange = "test" #output_message.exchange
-#            output_amqp_message.routing_key = "test"
-#
 #            # blocking publish output! new messages will be arriving in the input while we block
 #            if self._do_amqp_publish(output_amqp_message):
 #                self.statistics.metric("messages_publish_failed")
@@ -489,25 +487,33 @@ class MessageProcessingPipeline(Service):
 #            self.statistics.metric("messages_processed_total_completely")
 #            self.statistics.metric("messages_processed_type_%s_completely" % input_message_type)
 
-        except Empty:
-            # there was no messages for us, back to waiting we go
-            pass 
-        
-        except MessageTypeUnsupportedError as e:
-            self.logger.info(e)
-            self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
+        except Empty: # there was no messages for us, back to waiting we go
+            return False
+            
+        except MessageTypeUnsupportedException as e:
+            self.log_warning("Message type unsupported! %s" % e)
+            self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
+            self.report_event(PipelineEvent.UnsupportedMessage)
+            self.log_info("Message type unsupported; Sending ACK; %s" % message_routing_key)
             #self.statistics.metric("messages_processed_unknown_type")
             
-        except MessageProcessingFailedError as e:
-            self.logger.warning("Message processing failed for msg with routing_key=%s: %s" % (input_message_routing_key,e))
-            self._amqp_consumers[0].nack_message(input_message_delivery_tag, input_message_consumer_tag)
+        except MessageIgnoredException as e:
+            self.log_info("Message type ignored; Sending ACK; %s" % message_routing_key)
+            self.report_event(PipelineEvent.IgnoredMessage)
+            self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
+
+        except MessageProcessingFailedException as e:
+            self.log_warning("Message processing failed for msg with routing_key=%s: %s" % (message_routing_key,e.__repr__()))
+            self._input_adapters[0].nack_message(message_delivery_tag, message_consumer_tag)
+            self.report_event(MessageProcessingFailed)
             #self.statistics.metric("messages_processed_failed_error")
         
         except Exception as e:
             self.log_exception()
+            self.log_error("unexpected exception, see above")
+            self.report_event(MessageProcessingFailed)
 
-        # this round of work has completed
-        return 
+        self.log_debug("leaving _do_message_process_pass()")
 
     # we make these methods so we may better return or raise exceptions as 
     # there are conditions where a critical exception should result cesation
@@ -576,8 +582,8 @@ class MessageProcessingPipeline(Service):
         
         # The work loop
         while self.keep_working:
-            self._do_message_process_pass()
-        
+                self._do_message_process_pass()
+
         self._shutdown_pipeline()
 
         self.logger.info("Pipeline shut down completed")

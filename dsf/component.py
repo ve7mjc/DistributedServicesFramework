@@ -120,8 +120,10 @@ class Component():
     def __init__(self, **kwargs):
         try:
             # default name to that of child class type
+            #  allow keyword argument specification
+            if "name" in kwargs: self._name = kwargs["name"]
             if not hasattr(self,"_name"):
-                self._name = self.get("_name",self.__class__.__name__)
+                self._name = self.__class__.__name__
             
             # reference to a thread-safe queue to write all of our events
             self._central_events_queue = dsf.domain.component_events

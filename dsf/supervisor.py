@@ -17,6 +17,23 @@ from dsf.amqp import AsynchronousProducer, AsynchronousConsumer
 
 from queue import Empty,Queue
 
+from copy import copy
+
+import json
+
+# Status Report
+# Availability
+class StatusReport():
+    
+    data = {}
+    
+    def __init__(self):
+        self.data["timestamp"] = utilities.utc_timestamp()
+        if hasattr(dsf.domain,"service") and hasattr(dsf.domain.service,"name"):
+            self.data["service"] = dsf.domain.service.name
+    def to_json(self):
+        return json.dumps(self.data)
+
 
 # (1) Supervisor instance per Service
 # - Monitor all components of Service
@@ -44,6 +61,8 @@ class Supervisor(Component):
     _logger_name = "supervisor"
     
     _heartbeats = {}
+    _last_report_publish_time = 0
+    _minimum_check_in_time_secs = 30
     
     publish_queue = Queue()
     
@@ -52,13 +71,21 @@ class Supervisor(Component):
         try:
             # Proceed with Caution - ensure that events do not result in events
             #  aka no recursion bombs
-            self.kwconfig(kwargs,"monitor") # kw args namespace for modules
-            self._amqp_producer = AsynchronousProducer(**kwargs,logger_name="supervisor.amqp_producer", 
-                exchange=self.kwconfig.get("publish_exchange"))
-            self._amqp_consumer = AsynchronousConsumer(**kwargs,logger_name="supervisor.amqp_consumer",queue=self.kwconfig.get("control_queue"))
-            self.register_periodic_task(self.check_watchdogs,0.5,name="check_watchdogs")
+            
+            p_kwargs = copy(kwargs)
+            p_kwargs["logger_name"] = "supervisor.amqp_producer"
+            p_kwargs["exchange"] = kwargs.get("supervisor.exchange")
+            self._amqp_producer = AsynchronousProducer(**p_kwargs)
+            
+            c_kwargs = copy(kwargs)
+            c_kwargs["logger_name"] = "supervisor.amqp_consumer"
+            c_kwargs["queue"] = kwargs.get("supervisor.queue")
+            self._amqp_consumer = AsynchronousConsumer(**c_kwargs)
+            
+            self.register_periodic_task(self.check_watchdogs,0.5)
             # self.register_periodic_task(self.task_one,2,name="task_one")
-            self.register_periodic_task(self.task_statistics_to_log,10,name="statistics_console")
+            self.register_periodic_task(self.task_statistics_to_log,10)
+            self.register_periodic_task(self.periodic_service_status_report,5)
             
             # transitioning to gelf/udp
             #self.log_queue = dsf.domain.logging.queue
@@ -95,8 +122,7 @@ class Supervisor(Component):
     
     def register_periodic_task(self, function, time_seconds=1, **kwargs):
         task = {}
-        if "name" in kwargs: task["name"] = kwargs.get("name")
-        else: task["name"] = "PeriodicTask #%s" % (len(self._scheduled_tasks)+1)
+        task["name"] = function.__func__.__name__
         task["function"]=function
         task["time_secs"]=time_seconds
         task["paused"]=False
@@ -161,24 +187,22 @@ class Supervisor(Component):
                 report_event = False
                 try:
                     event = dsf.domain.component_events.get_nowait()
-                    
-                    if event.data["type"] == ComponentEvent.Heartbeat.value[0]:
+                    if event.type_code == ComponentEvent.Heartbeat.value:
                         self._heartbeats[event["component"]] = event
                     else: report_event = True
                     
                     self.log_debug("Received Event <%s> from %s; reporting=%s" % 
                         (event.data["type"], event.data["component"], report_event))
                     
-                    if report_event: 
-                        # event.data["service"] = self.service.name
-                        self.amqp_producer.publish(exchange="services",
-                            routing_key="services.events",body=event.to_json())
+                    if report_event:
+                        #event.data["service"] = self.service.name
+                        self.amqp_producer.publish(exchange="services",routing_key="services.events",body=event.to_json())
                     
                 except Empty: break
+                    
         except Exception as e:
             self.log_exception()
             
-
     def wait_components_ready(self,components,timeout_secs=3):
         started_time = utilities.utc_timestamp()
         total_components_ready = 0
@@ -193,7 +217,28 @@ class Supervisor(Component):
                 self.log_debug("leaving wait_components_ready()")
                 return components_ready
             time.sleep(0.01) # test for impact without
+    
+    # if we have not reported to the remote server in time_secs, we will
+    # force ourself to report in
+    
+    def periodic_service_status_report(self):
+        try:
+            sr = StatusReport()
+            sr.data["status"] = "ok"
+            self.amqp_producer.publish(exchange="services",routing_key="services.reports.status",body=sr.to_json())
+            self.log_debug("sending periodic service status report")
             
+        except Exception as e:
+            exceptionhandling.print_full_traceback_console()
+            print(e.__repr__())
+
+    # def periodic_check_in(self):
+#        if (utilities.utc_timestamp() - self._last_report_publish_time) >= self._minimum_check_in_time_secs:
+#            event = Event(component_name=self.name,event_type=ComponentEvent.Heartbeat)
+#            #self.amqp_producer.publish(exchange="services",routing_key="services.events",body=event.to_json())
+#            self.log_debug("have not published in %s secs; sending a heartbeat" % self._minimum_check_in_time_secs)
+#            self._last_report_publish_time = utilities.utc_timestamp()
+        
     # Called from Component.thread.start(target=_run())
     """ ### THREAD SAFETY ### """
     def run(self):
@@ -234,11 +279,11 @@ class Supervisor(Component):
                 #self.process_heartbeats()
                 self.process_component_events()
                 #self.do_log_queue()
+                self.do_task_scheduling()
                 pass
             except Exception as e:
                 print("exception in service loop")
                 self.log_exception()
-            #self.do_task_scheduling()
 
         """ SHUTDOWN """
         

@@ -111,10 +111,12 @@ class AsynchronousProducer(AsynchronousClient):
         # a delivery confirmation of from the list used to keep track of messages
         # that are pending confirmation.
         confirmation_type = method_frame.method.NAME.split('.')[1].lower()
+        delivery_tag = method_frame.method.delivery_tag
 
         # blocking message response?
-        if self.blocking_message_id:
+        if self.blocking_message_id == delivery_tag:
             self.blocking_message_id = 0
+            self.log_debug("delivery confirmation of id # %s = %s" % (delivery_tag,confirmation_type))
             self.blocking_publish_response.put(confirmation_type)
         else:
             # we could still fire a message here but are not
@@ -180,7 +182,7 @@ class AsynchronousProducer(AsynchronousClient):
         
         # is this legit?
         if not self.can_publish():
-            self.logger.error('do_publish() returned as channel is not ready')
+            self.log_error('do_publish() returned as channel is not ready')
             if message: self.blocking_publish_response.put("error")
             return
 
@@ -201,6 +203,11 @@ class AsynchronousProducer(AsynchronousClient):
             message = self.message_queue.get()
             self.__do_basic_publish(message)
 
+    # convenience method to publish an AmqpMessage
+    def publish_message(self, amqp_message, **kwargs):
+        kwargs["message"] = amqp_message
+        return self.publish(**kwargs)
+
     # request to publish a message - almost certainly from another thread
     # exchange, routing_key, body, **kwargs
     def publish(self, **kwargs):
@@ -208,19 +215,21 @@ class AsynchronousProducer(AsynchronousClient):
             # publish a message to RabbitMQ
             # track message numbers to check against delivery confirmations in
             # the on_delivery_confirmations method
-
-            exchange = kwargs.get("exchange", self._exchange)
-            routing_key = kwargs.get("routing_key", None)
-            body = kwargs.get("body", None)
-            properties = kwargs.get("properties", None)
+            
             blocking = kwargs.get("blocking", False)
 
-            # if we have been passed a <class 'Amqp.Message'>
-            if "message" in kwargs:
+            # if we have been passed a <class 'AmqpMessage'>
+            if "message" in kwargs: 
                 message = kwargs.get("message")
-            else:
-                message = AmqpMessage(exchange=exchange,routing_key=routing_key,
-                    body=body,properties=properties)
+                if message.type.code != "amqp":
+                    self.log_warning("refusing to continue with a message of type %s" % message.type)
+                    return
+            else: message = AmqpMessage.from_kwargs(**kwargs)
+
+            # inject exchange if it is not available
+            if not message.exchange:
+                if not self._exchange: self.log_warning("exchange not desginated in AMQPMessage")
+                else: message.exchange = self._exchange
 
             # place message in outgoing Queue
             # if we are trying to do a blocking mode, there could in fact be messages
@@ -234,10 +243,12 @@ class AsynchronousProducer(AsynchronousClient):
                 if self.can_publish():
                     # blocking mode so we can get a message ack back immediately and
                     # pass message asynchronously to ioloop in the callback request
+                    self.log_debug("doing blocking publish!")
                     cb = functools.partial(self.__publish_callback, message)
                     self._connection.ioloop.add_callback_threadsafe(cb)
                     # now block and wait for response from message Queue
-                    return self.blocking_publish_response.get()
+                    response = self.blocking_publish_response.get()
+                    return response
                 else: 
                     return "error"
             else:

@@ -1,4 +1,4 @@
-from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
+from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities, AmqpMessage
 
 import dsf.domain
 from dsf.component import Component
@@ -69,6 +69,11 @@ class MessageInputAdapterAmqpConsumer(AsynchronousConsumer,MessageInputAdapter):
     
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
+        
+    # Received an AmqpMessage and will enqueue it for the pipeline
+    def on_message(self,amqp_message):  
+        self._message_queue.put(amqp_message)
+        
 
 class SimulatedMessageInputAdapter(MessageInputAdapter,Component):
     
@@ -115,14 +120,9 @@ class MessageOutputAdapterAmqpProducer(AsynchronousProducer,MessageOutputAdapter
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         
-    def write(self, message):
-        kwargs = {}
-        kwargs["blocking"] = self._blocking
-        kwargs["exchange"] = self._publish_exchange
-        kwargs["routing_key"] = "test"
-        kwargs["body"] = message
-        # properties
-        self.publish(**kwargs)
+    def write(self, amqp_message):
+        self.log_debug("Wroting message %s; blocking=%s" % (amqp_message.routing_key,self._blocking))
+        return self.publish_message(amqp_message,blocking=self._blocking)
 
 # Message --> Console Writer
 # blocking? we can consider the console stream rate to be insignificant

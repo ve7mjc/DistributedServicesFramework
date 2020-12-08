@@ -13,15 +13,6 @@ from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
 from dsf.amqp import amqputilities
 from dsf.amqp.amqpmessage import AmqpMessage
 
-#from dsf.messageadapters import MessageInputAdapter
-
-# todo, if channel is closed on connect - it will not quit nicely (hangs)
-#2020-11-16 00:12:53,062 pika.channel WARNING Received remote Channel.Close (404): "NOT_FOUND - no queue 'weather_test' in vhost '/'" on <Channel number=1 OPEN conn=<SelectConnection OPEN transport=<pika.adapters.utils.io_services_utils._AsyncPlaintextTransport object at 0x7f0c659fcc10> params=<ConnectionParameters host=localhost port=5672 virtual_host=/ ssl=False>>>
-#2020-11-16 00:12:53,062 msc-processor.Consumer INFO Closing connection
-#2020-11-16 00:12:53,064 msc-processor.Consumer WARNING Connection closed, reconnect necessary: (200, 'Normal shutdown')
-#2020-11-16 00:12:53,064 msc-processor.Consumer DEBUG requested a threadsafe callback for ioloop to call stop_consuming()
-#2020-11-16 00:12:59,588 msc-processor.Consumer DEBUG requested a threadsafe callback for ioloop to call stop_consuming()
-
 # This Asynchronous Consumer will operate in one of two modes:
 # - Shared Queue mode: If a reference to a Queue object is passed in to the 
 #    constructor as a "message_queue" keyword-argument, the consumer will
@@ -191,39 +182,50 @@ class AsynchronousConsumer(AsynchronousClient):
     # 'pika.spec.Basic.Deliver' basic_deliver
     # 'pika.spec.BasicProperties' properties:
     # 'bytes' body
-    def _on_message(self, _unused_channel, basic_deliver, properties, body):
-
+    # The function to call when consuming with the signature on_message_callback(channel, method, properties, body), where
+    # channel: pika.Channel method: pika.spec.Basic.Deliver properties: pika.spec.BasicProperties body: bytes
+    def _on_message(self, _unused_channel, method, properties, body):
         self.last_message_received_time = datetime.now()
-        
-        basic_deliver.routing_key = amqputilities.remove_routing_key_prefix(
-            basic_deliver.routing_key,self._strip_routing_key_prefix)
-        
-        message = AmqpMessage(pika_tuple=(basic_deliver, properties, body))
-            
+
         try:
+            # Remove routing key prefix if directed to do so
+            if self._strip_routing_key_prefix:
+                method.routing_key = amqputilities.remove_routing_key_prefix(
+                    method.routing_key,self._strip_routing_key_prefix)
+            
+            amqp_message = AmqpMessage.from_pika(method, properties, body)
+            
             wrote_message = False
             # Determine where this message needs to go based on configuration
+            
+            # OPTION 1 - Call child class method on_message()
             # Check for a derived child class method named on_message(..)
-            if hasattr(self,"on_message"):           
-                self.logger.debug("Received Message # %s -> self.on_message(..); routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
-                self.on_message(message)
+            # Function = on_message(AmqpMessage())
+            if hasattr(self,"on_message"):
+                #self.logger.debug("Message # %s -> self.on_message(..); routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
+                self.on_message(amqp_message)
                 wrote_message = True
             
+            # OPTION 2 - Write to a shared Queue()
             # Reference to a shared message Queue has been passed to the 
             # constructor. This occurs when this consumer is attached to 
-            # a MessageProcessingPipeline among other use-cases
+            # a MessageProcessingPipeline
             elif self._received_messages_queue:
-                self._received_messages_queue.put(message)
-                self.logger.debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
+                self._received_messages_queue.put(amqp_message)
+                self.log_debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (method.delivery_tag, method.routing_key, len(body)))
             
+            # OPTION 3 - Call a callback function which has been passed to us
             # Callback method has been registered with us. This is untested
             # and likely dangerous as the call will be coming from the ioloop
-            elif self._receive_message_callback:
-                self._receive_message_callback(message)
+#            elif self._receive_message_callback:
+#                self._receive_message_callback(message)
             
             else:
                 self.logger.info("message received but neither an on_message(..) method or a message queue has been provided")
             
+            # Statistics, etc?
+            if wrote_message:
+                pass
 
         except Exception as e:
             self.logger.error(exceptionhandling.traceback_string(e))
@@ -235,11 +237,11 @@ class AsynchronousConsumer(AsynchronousClient):
     #  delivery_tags are related to a particular consumer session only
     def ack_message(self, delivery_tag, multiple=False, consumer_tag=None):
         if self.test_mode("amqp_nack_requeue_all_messages"):
-            self.logger.info("ack was requested for delivery_tag=%s but test_mode(amqp_nack_requeue_all_messages) is enabled" % delivery_tag)
+            self.log_info("ack was requested for delivery_tag=%s but test_mode(amqp_nack_requeue_all_messages) is enabled" % delivery_tag)
             self.nack_message(delivery_tag, consumer_tag=consumer_tag, multiple=False, requeue=True)
             return
         if consumer_tag and consumer_tag != self._consumer_tag:
-            self.logger.warning("ack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
+            self.log_warning("ack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
         else:
             try:
                 cb = functools.partial(self.__do_ack_message, delivery_tag, multiple)
@@ -247,7 +249,7 @@ class AsynchronousConsumer(AsynchronousClient):
             except ChannelWrongStateError:
                 # this was moved from a method which was calling the self._channel directly
                 # we not hot hit this exception any more
-                self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
+                self.log_error("unable to ack msg # %s as channel is not open" % delivery_tag)
     
     # called from ioloop in a thread-safe callback
     def __do_ack_message(self, delivery_tag=0, multiple=False):
@@ -256,7 +258,7 @@ class AsynchronousConsumer(AsynchronousClient):
             self.logger.debug("requesting ioloop write an ack for %s to the channel" % delivery_tag)           
         except ChannelWrongStateError:
             self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
-
+    
     # Send NACK for Message - Thread-Safe IOLoop Callback
     # channel.basic_nack(delivery_tag=None, multiple=False, requeue=True)
     # delivery-tag (integer) – int/long The server-assigned delivery tag

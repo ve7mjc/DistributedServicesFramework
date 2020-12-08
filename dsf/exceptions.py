@@ -10,18 +10,31 @@ class ComponentStartTimeout(Exception):
 #
 # Message Processing Exceptions
 
-# a message has been passed to the processor which has determined
-# it does not have the ability to decode
-class MessageTypeUnsupportedError(Exception):
+class MessageProcessorException(Exception):
+    ack = None
     pass
 
 # message processing has been attempted on this message and unexpectedly failed
-class MessageProcessingFailedError(Exception):
+class MessageProcessingFailedException(MessageProcessorException):
+    ack = False
     pass
 
-# do we really want this?
-class MessageTypeIgnored(Exception):
+# a message has been passed to the processor which has determined
+# it does not have the ability to decode
+class MessageTypeUnsupportedException(MessageProcessorException):
+    ack = True
     pass
+
+# Message is received but not wanted.. we may ACK the delivery
+class MessageIgnoredException(MessageProcessorException):
+    ack = True
+    pass
+
+#class MessageRejectedException(MessageProcessorException):
+#    pass
+
+
+## MESSAGE ADAPTERS
 
 # Message Adapter has Timed out getting to ready on startup
 class MessageAdapterStartupTimeout(Exception):

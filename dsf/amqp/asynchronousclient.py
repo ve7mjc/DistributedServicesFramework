@@ -97,6 +97,10 @@ class AsynchronousClient(Component):
         self._name = kwargs.get("name", None)
         self._connection_parameters = kwargs.get("connection_parameters", None)
         
+        if "bindings" in kwargs:
+            for binding in kwargs["bindings"]:
+                self.add_binding(*binding)
+
         # module name for the purpose of logging and disk writes
         if not self._name:
             if self._client_type == ClientType.Producer:
@@ -120,8 +124,8 @@ class AsynchronousClient(Component):
     # Add a routing_key pattern
     # Exchanges and Queues must be declared in order for this to be useful
     # must be done prior to calling connection.connect ( Thread.start() )
-    def add_binding(self, routing_key_pattern):
-        self._bindings.append(routing_key_pattern)
+#    def add_binding(self, routing_key_pattern):
+#        self._bindings.append(routing_key_pattern)
 
     # Connect to RabbitMQ using the asynchronous SelectConnection adapter
     # Returns a connection handle 'pika.SelectConnection'
@@ -264,6 +268,7 @@ class AsynchronousClient(Component):
         binding['exchange'] = exchange
         binding['routing_key'] = routing_key
         self._bindings.append(binding)
+        self.log_debug("added binding: %s" % binding)
 
     # Setup exchange on RabbitMQ
     # Send the Exchange.Declare RPC command with a callback method for pika

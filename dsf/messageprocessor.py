@@ -17,6 +17,9 @@ class MessageProcessor(Component):
     _amqp_input_message_routing_key_acceptance_filters = []
     _amqp_input_message_routing_key_rejection_filters = []
     
+    _message_rejected = False
+    _message_rejected_reason = None
+    
     # one of a number of checks the pipeline will make when dynamically
     # loading and instantiating this Class
     _valid = None
@@ -26,6 +29,7 @@ class MessageProcessor(Component):
     __message_pipeline_hdl = None
     
     def __init__(self, message_pipeline_hdl = None, **kwargs):
+        
         # pass in reference to parent instance
         self.__message_pipeline_hdl = message_pipeline_hdl
         
@@ -72,6 +76,12 @@ class MessageProcessor(Component):
         else: 
             # return False to indicate we did NOT fail a test we did not do
             return False 
+            
+    def call_process_message(self, amqp_message):
+        
+        self._message_rejected = False
+        self._message_rejected_reason = None
+        
     
     # this method is checked after processor is dynamically loaded to check
     # to see if we have a valid instance of MessageProcessor
@@ -91,3 +101,16 @@ class MessageProcessor(Component):
     @property
     def version(self):
         return self._processor_version
+        
+    # called when a message is rejected from further processing
+    # some design patterns will require this to be used as part of a normal
+    # process.
+    # ack - do we want to acknowledge this message for delivery?
+    def reject(self,reason=None,ack=True):
+        self._message_rejected = True
+        self._message_rejected_reason = reason
+        self.log_debug("rejecting message for reason: %s" % reason)
+        
+    @property
+    def rejected(self):
+        return self._message_rejected

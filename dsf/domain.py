@@ -7,13 +7,18 @@ import sys # for sys.path
 
 from dsf import utilities
 
+# Temporary Global Configuration
+# - Move to service instance
 logging_gelf_udp_host = "44.135.208.228"
 logging_gelf_udp_port = 12201
+supervisor_amqp_host = "localhost"
+supervisor_amqp_exchange = "services"
+supervisor_amqp_queue = "monitor_rx_dev"
 
 # vars
 monitor = None
 
-try: # this may never be needed - but a canary of sorts
+try: # this may never be needed - but a canary
     if _called: print("`import dsf.domain` called again!")
 except Exception: pass
 _called = True
@@ -41,9 +46,6 @@ from logging.handlers import QueueHandler, QueueListener
 from copy import copy # log record
 import json
 from pygelf import GelfUdpHandler # GelfTcpHandler, GelfTlsHandler, GelfHttpHandler
-
-"""
-"""
 
 # Reject or Accept log record name (logger name) against pattern and 
 # Python logging Filters are no-longer special classes. The class must simply
@@ -392,6 +394,7 @@ service = None
 
 #  only designed to support a single Service at this time
 def register_service(serviceobj):
+    global service, _services
     service = serviceobj
     _services.append(serviceobj)
     supervisor.register_service(serviceobj)
@@ -410,9 +413,13 @@ class Config():
     data = None
     loaded = False
 
-    def load(self,filename=None,required=False):
+    def load(self,filename=None,required=None):
 
         from os import path
+
+        # if filename is supplied, required is True unless specified otherwise
+        if filename and required is not False:
+            required = True
 
         # We do not have a logger at this point so we will need to create one
         #  if we are going to raise Exception and terminate
@@ -452,6 +459,8 @@ class Config():
             #  locate or load it
             if required and not self.loaded:
                 raise Exception("required but not found")
+                
+            return self.data
         
         except Exception as e:
             raise Exception("unable to load config file %s: %s" % (filename,e.__str__()))
@@ -504,8 +513,11 @@ def init_supervisor(**kwargs):
     try:
         global supervisor
         from dsf.supervisor import Supervisor
-        
+
+        kwargs["supervisor.exchange"] = supervisor_amqp_exchange
+        kwargs["supervisor.queue"] = supervisor_amqp_queue
         supervisor = Supervisor(**kwargs)
+        
         supervisor.start()
 
         blocking_secs = kwargs.get("blocking_secs",None)

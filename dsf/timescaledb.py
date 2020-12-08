@@ -98,7 +98,7 @@ class Writer(MessageOutputAdapter,Component):
         try:
             with self.pg_conn:
                 with self.pg_conn.cursor() as curs:
-                    SQL = "INSERT INTO weather_swob_testing (test) VALUES (%s);" # Note: no quotes
+                    SQL = "INSERT INTO weather_swob_msc_raw (test) VALUES (%s);" # Note: no quotes
                     data = ("testing", )
                     curs.execute(SQL, data) # Note: no % operator
         except Exception as e:
@@ -108,8 +108,7 @@ class Writer(MessageOutputAdapter,Component):
         #                with self.pg_conn:
 #                    with self.pg_conn.cursor() as curs:
 #                        curs.execute(SQL1)
-        
-        
+
 #    Python builtin datetime, date, time, timedelta are converted into PostgreSQL’s timestamp[tz], date, time[tz], interval data types. Time zones are supported too. The Egenix mx.DateTime objects are adapted the same way:
 #
 #    >>> dt = datetime.datetime.now()

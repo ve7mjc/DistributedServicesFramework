@@ -1,6 +1,8 @@
 from lxml import etree #, objectify
 from io import BytesIO # StringIO, 
 
+from enum import Enum
+
 # application/json
 # text/csv
 # text/xml
@@ -11,18 +13,30 @@ from io import BytesIO # StringIO,
 
 class MessageType():
     
-    def __init__(self):
-        return
+    _code = None
+    _name = None
+    _description = None
+
+    def __init__(self,typecode=None,name=None,description=None):
+        self._code = typecode
+        self._name = name
+        self._description = description
     
     @property
     def name(self): return self._name
-    _name = None
+    
+    @property
+    def code(self): return self._code
+        
+    @property
+    def description(self): return self._description
+        
+    def __str__(self):
+        return "%s, code=<%s>, description=%s" % (self._name, self._code, self._description)
+
 
 class Message():
-    
-    # Container Concept
-    _type = MessageType()
-    
+
     # Message Properties with defaults
     _data = {}
     _valid = False
@@ -31,6 +45,13 @@ class Message():
     # Base / Original Data
     _source_data = None
     _source_content_type = None
+
+    def __init__(self):
+        
+        # Container Concept
+        if not hasattr(self,"_type"):
+            #self.log_warning("declare a message type prior to calling Message.__init__(..)")
+            self._type = MessageType()
 
     # Child Factory Class Method
     # Produce child from XML string
@@ -99,7 +120,7 @@ class Message():
         return self._content_type
         
     @property
-    def type_code(self): return self._type_code
+    def type_code(self): return self._type.code
         
     @property
     def data(self): return self._data
@@ -113,6 +134,7 @@ class Message():
     @property
     def type(self):
         return self._type
+
     def set_type(self,**kwargs):
         if not self._type:
             self._type = MessageType()
