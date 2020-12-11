@@ -10,7 +10,7 @@ from queue import Queue
 from pika import BasicProperties
 
 from dsf.amqp import AsynchronousClient, ClientType
-from dsf.amqp.amqpmessage import AmqpMessage
+from dsf.amqp.amqpmessage import AmqpProducerMessage
 
 # Important Note on Thread Safety
 # self._connection.ioloop.start() runs in Thread::run()
@@ -37,8 +37,10 @@ class AsynchronousProducer(AsynchronousClient):
     
     def __init__(self, **kwargs):
         
-        self._exchange = kwargs.get("exchange", None)
-        
+        self.config_init(**kwargs)
+        self._exchange = self.config.get("exchange")
+        self._amqp_url = self.config.get("url")
+
         # NOT IMPLEMENTED!
         # if we are using this AMQP Producer via a logging handler
         # we will enter a publish storm if there is any logging output
@@ -208,23 +210,25 @@ class AsynchronousProducer(AsynchronousClient):
         kwargs["message"] = amqp_message
         return self.publish(**kwargs)
 
-    # request to publish a message - almost certainly from another thread
-    # exchange, routing_key, body, **kwargs
+    # request to publish a message
+    # Method 1 - kwargs: exchange, routing_key, body
+    # Method 2 - pass AmqpProducerMessage
     def publish(self, **kwargs):
         try:
             # publish a message to RabbitMQ
             # track message numbers to check against delivery confirmations in
             # the on_delivery_confirmations method
-            
             blocking = kwargs.get("blocking", False)
 
-            # if we have been passed a <class 'AmqpMessage'>
-            if "message" in kwargs: 
-                message = kwargs.get("message")
-                if message.type.code != "amqp":
+            # if we have been passed a <class 'AmqpProducerMessage'>
+            if "message" in kwargs:
+                if isinstance(kwargs["message"],AmqpProducerMessage):
+                    message = kwargs.get("message")
+                else:
                     self.log_warning("refusing to continue with a message of type %s" % message.type)
                     return
-            else: message = AmqpMessage.from_kwargs(**kwargs)
+            else:
+                message = AmqpProducerMessage.from_kwargs(**kwargs)
 
             # inject exchange if it is not available
             if not message.exchange:
@@ -263,8 +267,9 @@ class AsynchronousProducer(AsynchronousClient):
                     return True
         
         except Exception as e:
-            self.logger.error("producer::publish() %s" % e)
             self.log_exception()
+            self.logger.error("producer::publish() %s" % e.__str__())
+            
 
     # Gracefully this producer
     # This method is only called from the BaseClass.stop() method

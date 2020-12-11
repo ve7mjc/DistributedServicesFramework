@@ -2,9 +2,6 @@ import dsf.domain
 
 from dsf.component import Component
 
-class MessageProcessorException(Exception):
-    pass
-
 class MessageProcessor(Component):
     
     # these must be declared and not None in child classes
@@ -14,24 +11,26 @@ class MessageProcessor(Component):
     _input_message_format = None
     _output_message_format = None
     
-    _amqp_input_message_routing_key_acceptance_filters = []
-    _amqp_input_message_routing_key_rejection_filters = []
+    _routing_keys_accepted = []
+    _routing_keys_rejected = []
     
     _message_rejected = False
     _message_rejected_reason = None
     
     # one of a number of checks the pipeline will make when dynamically
     # loading and instantiating this Class
-    _valid = None
+    _valid = True
     _constructor_called = False
     
     # reference to MessageProcessingPipeline instance (Parent)
     __message_pipeline_hdl = None
     
-    def __init__(self, message_pipeline_hdl = None, **kwargs):
+    def __init__(self,**kwargs):
         
-        # pass in reference to parent instance
-        self.__message_pipeline_hdl = message_pipeline_hdl
+        # pass in reference to parent (Pipeline) instance
+        self._pipeline_hdl = kwargs.get("pipeline_hdl", None)
+        if not self._pipeline_hdl: 
+            self.log_info("pipeline handle not supplied")
         
         # Set logger name here as the name specified in the child 
         # MessageProcessor Class beats the name of the "processor" class
@@ -40,8 +39,12 @@ class MessageProcessor(Component):
         # Component constructor
         super().__init__(**kwargs)
 
+    @property
+    def pipeline(self):
+        return self._pipeline_hdl
+
     def add_accepted_amqp_routing_key_pattern(self, routing_key_pattern):
-        self._amqp_input_message_routing_key_acceptance_filters.append(routing_key_pattern)
+        self._routing_keys_accepted.append(routing_key_pattern)
 
     # invalidate this Class instance. Flip self._valid to False
     # and log a message

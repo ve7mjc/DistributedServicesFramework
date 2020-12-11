@@ -56,7 +56,6 @@ class AsynchronousClient(Component):
     _channel = None
     _reconnect_attempts = 0
     _automatic_reconnect = True
-    _amqp_url = None
     
     _exchange = None
     _exchange_type = None
@@ -83,6 +82,8 @@ class AsynchronousClient(Component):
 
     def __init__(self, **kwargs):
 
+        self.config_init(**kwargs)
+
         # disable pika logging for now
         pika_logger = logging.getLogger("pika").setLevel(logging.CRITICAL) # logging.CRITICAL
 
@@ -90,16 +91,22 @@ class AsynchronousClient(Component):
         loglevel = kwargs.get("loglevel", logging.DEBUG)
         loglevel = kwargs.get("level", loglevel) # alternate key name
         
-        statistics = kwargs.get("statistics", None)
-        self._amqp_url = kwargs.get("url", self._amqp_url)
-        self._host = kwargs.get("host", None)
-        self._amqp_application_name = kwargs.get("amqp_app_name", None)
-        self._name = kwargs.get("name", None)
-        self._connection_parameters = kwargs.get("connection_parameters", None)
+        self._amqp_url = self.config.get("url",None)
+        self._host = self.config.get("host", None)
+        self._amqp_application_name = self.config.get("amqp_app_name", None)
+        self._name = self.config.get("name", None)
+        self._connection_parameters = self.config.get("connection_parameters",None)
         
-        if "bindings" in kwargs:
-            for binding in kwargs["bindings"]:
-                self.add_binding(*binding)
+#        statistics = kwargs.get("statistics", None)
+#        self._amqp_url = kwargs.get("url", self._amqp_url)
+#        self._host = kwargs.get("host", None)
+#        self._amqp_application_name = kwargs.get("amqp_app_name", None)
+#        self._name = kwargs.get("name", None)
+#        self._connection_parameters = kwargs.get("connection_parameters", None)
+        
+        bindings = self.config.get("bindings",list())
+        for binding in bindings:
+            self.add_binding(*binding)
 
         # module name for the purpose of logging and disk writes
         if not self._name:
@@ -267,8 +274,17 @@ class AsynchronousClient(Component):
         binding['queue'] = queue
         binding['exchange'] = exchange
         binding['routing_key'] = routing_key
+
         self._bindings.append(binding)
         self.log_debug("added binding: %s" % binding)
+        
+    # add by dict
+    def add_bindings(self, bindings):
+        if type(bindings) is not list:
+            self.log_warning("bindings type is %s!" % type(bindings))
+            return True
+        for binding in bindings:
+            self._bindings.append(binding)
 
     # Setup exchange on RabbitMQ
     # Send the Exchange.Declare RPC command with a callback method for pika

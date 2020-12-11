@@ -1,4 +1,5 @@
-from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities, AmqpMessage
+from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
+from dsf.amqp import AmqpConsumerMessage, AmqpProducerMessage
 
 import dsf.domain
 from dsf.component import Component
@@ -21,17 +22,28 @@ import logging
 # direction - "in" or "out"
 
 # abstract class
-class MessageAdapter(): # Component
+class MessageAdapter(Component): # Component
     
     # ability for a data adapter to arbitrarily throttle the rate of
     # message flow.
     _throttle_messages_sec = None
     _adapter_type = None # declare in child class; eg. FileWriter
     
+    _message_types = None
+    
     def __init__(self,**kwargs):
+        
+        self._pipeline_hdl = kwargs.get("pipeline_hdl", None)
+        if not self._pipeline_hdl: self.log_info("pipeline handle not supplied")
+            
         self._throttle_messages_sec = kwargs.get("throttle",None)
+        
         super().__init__(**kwargs)
     
+    @property
+    def pipeline(self):
+        return self._pipeline_hdl
+
     # "in" or "out"
     @property
     def direction(self):
@@ -67,18 +79,24 @@ class MessageInputAdapterAmqpConsumer(AsynchronousConsumer,MessageInputAdapter):
     
     _adapter_type = "AMQPConsumer"
     
+    _message_types = [AmqpConsumerMessage]
+    
     def __init__(self,**kwargs):
+        self.config_init() # inject config!
+        #kwargs["queue"] = self.config.get("queue",None)
         super().__init__(**kwargs)
         
     # Received an AmqpMessage and will enqueue it for the pipeline
     def on_message(self,amqp_message):  
         self._message_queue.put(amqp_message)
-        
 
-class SimulatedMessageInputAdapter(MessageInputAdapter,Component):
+
+class SimulatedMessageInputAdapter(MessageInputAdapter):
     
     _adapter_type = "SimulatedMessageInput"
     _threaded = True
+    
+    _message_types = [str]
 
     def __init__(self,**kwargs):
         kwargs["logger_name"] = "simulatedinput"
@@ -117,19 +135,24 @@ class MessageOutputAdapterAmqpProducer(AsynchronousProducer,MessageOutputAdapter
     _publish_routing_key = None
     _blocking = True
     
+    _message_types = [AmqpProducerMessage]
+    
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         
     def write(self, amqp_message):
-        self.log_debug("Wroting message %s; blocking=%s" % (amqp_message.routing_key,self._blocking))
+        self.log_debug("Wroting message %s; blocking=%s" 
+            % (amqp_message.routing_key,self._blocking))
         return self.publish_message(amqp_message,blocking=self._blocking)
 
 # Message --> Console Writer
 # blocking? we can consider the console stream rate to be insignificant
 # fairly sure it is non-blocking anyways -- eg write to a buffer and flush
-class MessageOutputAdapterConsoleWriter(MessageOutputAdapter,Component):
+class MessageOutputAdapterConsoleWriter(MessageOutputAdapter):
     
     _adapter_type = "ConsoleWriter"
+    
+    _message_types = [str]
 
     def __init__(self,**kwargs):
         # Component, then MessageOutputAdapter

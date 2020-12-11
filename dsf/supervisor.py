@@ -16,7 +16,6 @@ from dsf.component import Component
 from dsf.amqp import AsynchronousProducer, AsynchronousConsumer
 
 from queue import Empty,Queue
-
 from copy import copy
 
 import json
@@ -191,9 +190,11 @@ class Supervisor(Component):
                         self._heartbeats[event["component"]] = event
                     else: report_event = True
                     
-                    self.log_debug("Received Event <%s> from %s; reporting=%s" % 
-                        (event.data["type"], event.data["component"], report_event))
+#                    self.log_debug("Received Event <%s> from %s; reporting=%s" % 
+#                        (event.data["type"], event.data["component"], report_event))
                     
+                    # too much traffic right now
+                    report_event = False
                     if report_event:
                         #event.data["service"] = self.service.name
                         self.amqp_producer.publish(exchange="services",routing_key="services.events",body=event.to_json())
@@ -225,8 +226,8 @@ class Supervisor(Component):
         try:
             sr = StatusReport()
             sr.data["status"] = "ok"
-            self.amqp_producer.publish(exchange="services",routing_key="services.reports.status",body=sr.to_json())
-            self.log_debug("sending periodic service status report")
+            # self.amqp_producer.publish(exchange="services",routing_key="services.reports.status",body=sr.to_json())
+            # self.log_debug("sending periodic service status report")
             
         except Exception as e:
             exceptionhandling.print_full_traceback_console()

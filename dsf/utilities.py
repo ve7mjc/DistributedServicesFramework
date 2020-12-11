@@ -69,12 +69,19 @@ class TerminalColor():
         stdout.write(u"\u001b[38;5;" + code + "m " + code.ljust(4) + "\r\n\r\n")
     
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 def utc_timestamp():
     return datetime.now().timestamp()
 
+def utc_timestamp_to_datetime(utc_timestamp):
+#    now_timestamp = time.time()
+#    offset = datetime.fromtimestamp(now_timestamp) - datetime.utcfromtimestamp(now_timestamp)
+#    utc_datetime + offset
+    return datetime.fromtimestamp(utc_timestamp,timezone.utc)
     
+    
+
 # Measure memory size of object including its attributes
 # Performs self-recursive calls until is has "seen" all attributes of
 #  a class

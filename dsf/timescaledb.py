@@ -3,50 +3,82 @@
 #
 from dsf.component import Component
 from dsf.messageadapters import MessageOutputAdapter
+from dsf.messaging import Message
 
 import psycopg2
 from queue import Queue,Empty
 
-dbuser="msc_writer"
-dbpass = "v8R7Hm5$ku6CBY3p"
-dbname = "mdas"
-
-CONNECTION = "postgres://msc_writer:v8R7Hm5$ku6CBY3p@localhost/mdas" # :5432
-
 import threading
 
-class Writer(MessageOutputAdapter,Component):
+class Writer(MessageOutputAdapter):
     
     _adapter_type = "TimescaleDbWriter"
     _message_direction = "out"
+    _config_section = "output.postgresql"
+    _message_types = [dict]
     
     message_queue = Queue()
     
     def __init__(self,**kwargs):
-        
         #self.lock = threading.RLock()
         #self.condition = threading.Condition()
-
         self._start_required = True
         self._stop_required = True
         
+        # pulls config from service global
+        self.config_init()
+        self._db_host = self.config.get("host")
+        self._db_port = self.config.get("port","5432")
+        self._db_username = self.config.get("username")
+        self._db_password = self.config.get("password")
+        self._db_database = self.config.get("database")
+        self._db_table = self.config.get("table")
+        
+        self.db_uri = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
+            user=self._db_username,
+            password=self._db_password,
+            host=self._db_host,
+            port=self._db_port,
+            db=self._db_database
+        )
+        
         super().__init__(**kwargs)
+
+    # Write Message to Adapter
+    # MessageProcessor will ensure that the message type
+    #  respects that of self._message_types = []
+    def write(self, message):
+        sqldict = message.data
+        try:
+            with self.pg_conn:
+                with self.pg_conn.cursor() as curs:
+                    placeholders = ', '.join(['%s'] * len(sqldict))
+                    columns = ', '.join(sqldict.keys())
+                    sql = "INSERT INTO %s ( %s ) VALUES ( %s )" % (self._db_table, columns, placeholders)
+                    self.log_debug(sql)
+                    curs.execute(sql, list(sqldict.values())) # Note: no % operator
+            return "ack"
+        except Exception as e:
+            self.log_exception()
+            self.log_error(e.__repr__())
+            return True
 
     def start(self):
         super().start()
         self.connect()
-            
+
     def stop(self,reason=None):
         super().stop(reason)
-        self.pg_conn.close()
-        
+        if hasattr(self,"pg_conn"):
+            self.pg_conn.close()
+    
     def connect(self):
         try:
-            self.pg_conn = psycopg2.connect(CONNECTION)
+            self.pg_conn = psycopg2.connect(self.db_uri)
             self.log_info("connected to postgresql")
         except:
             self.log_exception()
-
+    
 #    def run(self):
 # 
 #        while self.keep_running:
@@ -92,18 +124,6 @@ class Writer(MessageOutputAdapter,Component):
     #    statements formulate our INSERT SQL statement and then we execute that
     #    statement,
 
-    # Write Message to Adapter
-    def write(self, message):
-        self.message_queue.put(message)
-        try:
-            with self.pg_conn:
-                with self.pg_conn.cursor() as curs:
-                    SQL = "INSERT INTO weather_swob_msc_raw (test) VALUES (%s);" # Note: no quotes
-                    data = ("testing", )
-                    curs.execute(SQL, data) # Note: no % operator
-        except Exception as e:
-            #self.log_exception()
-            self.log_error(e.__repr__())
         
         #                with self.pg_conn:
 #                    with self.pg_conn.cursor() as curs:

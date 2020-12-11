@@ -43,25 +43,20 @@ Logging
 
 import logging as pylogging
 from logging.handlers import QueueHandler, QueueListener
+from logging import FileHandler, StreamHandler, Handler
 from copy import copy # log record
 import json
 from pygelf import GelfUdpHandler # GelfTcpHandler, GelfTlsHandler, GelfHttpHandler
+from sys import stdout
 
 # Reject or Accept log record name (logger name) against pattern and 
 # Python logging Filters are no-longer special classes. The class must simply
 #  have a filter(record) method. This class can be attached to a handler
 #  or a logger directly.
-class PatternAcceptanceFilter:
+class PatternAcceptanceFilter():
     
     filters = []
     
-    # must match pattern AND level minimum
-    def add_accept_filter(self,pattern,level):
-        self.add_filter(pattern,level,"accept")
-        
-    def add_reject_filter(self,pattern,level):
-        self.add_filter(pattern,level,"reject")
-
     def add_filter(self,pattern,level,action):
         if type(level) is str:
             level = getattr(pylogging, level.upper(),pylogging.DEBUG)
@@ -72,6 +67,10 @@ class PatternAcceptanceFilter:
         self.filters.append(af)
     
     def filter(self,record):
+        if record.levelname == "ERROR":
+            # kwargs["print_log_call_line"]
+            print(record.msg)
+            print(record.args.__str__())
         #record.message
         # default to WARNING if we do not have a filter in place
         if not len(self.filters):
@@ -265,50 +264,107 @@ class ColoredFormatter(pylogging.Formatter):
         
         return pylogging.Formatter.format(self, fmt_record)
 
+
 class LoggingSystem():
     
     _loggers = []
+    _configured = False
     
-    def __init__(self):
-        self.pattern_filter = PatternAcceptanceFilter()
+    class LogHandler(Handler):
+        
+        def __init__(self):
+            self.pattern_filter = PatternAcceptanceFilter()
+            self.addFilter(self.pattern_filter)
+            
+        def add_accept_pattern(self,pattern,level):
+            self.pattern_filter.add_filter(pattern,level,"accept")
+            
+        def add_reject_pattern(self,pattern,level):
+            self.pattern_filter.add_filter(pattern,level,"reject")
 
-        # Configure Console Formatter - Colored LogLevels and Highlighting
-        console_fmt = "[%(name)-30s][$LVLS%(levelname)-8s$LVLR]  %(message)s ($BOLD%(filename)s$RESET:%(lineno)d)"
-        #console_format = self.formatter_message(console_fmt,True)
-        self.console_formatter = ColoredFormatter(console_fmt)
+    # handlers
+    class Console(StreamHandler,LogHandler):
+        
+        def __init__(self):
+            StreamHandler.__init__(self,stdout)
+            LoggingSystem.LogHandler.__init__(self)
+            self.pattern = ("%(asctime)s [%(name)-30s][$LVLS%(levelname)-8s$LVLR]  "
+                "%(message)s ($BOLD%(filename)s$RESET:%(lineno)d)")
+            self.formatter = ColoredFormatter(self.pattern)
+            self.setFormatter(self.formatter)
+            
+        def clear_highlighting_rules(self):
+            self.formatter.clear_highlighting_rules()
+
+        def add_highlighter(self,type,pattern,action,color,**kwargs):
+            self.formatter.add_highlighter(type,pattern,action,color,**kwargs)
+            
+        
+    class Remote(GelfUdpHandler,LogHandler):
+        
+        def __init__(self):
+            GelfUdpHandler.__init__(self,host=logging_gelf_udp_host, 
+                port=logging_gelf_udp_port, debug=True, compress=False)
+            LoggingSystem.LogHandler.__init__(self)
+        
+    class File(FileHandler,LogHandler):
+        
+        def __init__(self):
+            FileHandler.__init__(self,'%s.log' % app_basenamenosuff)
+            LoggingSystem.LogHandler.__init__(self)
+            self.pattern = '%(asctime)s %(name)s %(levelname)s %(filename)s:%(lineno)d %(message)s'
+            self.formatter = pylogging.Formatter(self.pattern)
+            self.setFormatter(self.formatter)
+            
+    def __init__(self):
+        
+        self.console = self.Console()
+        self.remote = self.Remote()
+        self.file = self.File()
+
+        # autoconfigure - take note!
+        self.configure_root_logger()
 
     # Remove any handlers which may have been added by other libraries
     # Attach a StreamHandler (console) and FileHanlder (log files)
     def configure_root_logger(self):
         
+        if self._configured: return True
+
         root_logger = pylogging.getLogger()
         
         while root_logger.hasHandlers():
             root_logger.removeHandler(root_logger.handlers[0])
+            
+        root_logger.addHandler(self.console)
+        root_logger.addHandler(self.file)
+        root_logger.addHandler(self.remote)
 
-        # Add console output Handler
-        # StreamHandler appears to default to writing output to STDERR
-        console_handler = pylogging.StreamHandler(stdout)       
-        console_handler.addFilter(self.pattern_filter)
-        console_handler.setFormatter(self.console_formatter)
-        root_logger.addHandler(console_handler)
-        
-        # Add File Handler
-        file_format = '%(asctime)s %(name)s %(levelname)s %(filename)s:%(lineno)d %(message)s'
-        #root_logger_formatting = '%(asctime)s ' + self.name + '.%(name)s %(levelname)s %(message)s'
-        file_formatter = pylogging.Formatter(file_format)
-        file_handler = pylogging.FileHandler('%s.log' % app_basenamenosuff)
-        file_handler.setFormatter(file_formatter)
-        root_logger.addHandler(file_handler)
-        
-        # GELF Logger
-        root_logger.addHandler(GelfUdpHandler(host=logging_gelf_udp_host, 
-            port=logging_gelf_udp_port, debug=True, compress=False))
+#        # Add console output Handler
+#        # StreamHandler appears to default to writing output to STDERR
+#        self.console.hander = StreamHandler(stdout)
+#        self.console.hander.addFilter(self.console_pattern_filter)
+#        self.console.hander.setFormatter(self.console_formatter)
+#        root_logger.addHandler(self.console.hander)
+#        
+#        # Add File Handler
+#        self.file.strformat = '%(asctime)s %(name)s %(levelname)s %(filename)s:%(lineno)d %(message)s'
+#        #root_logger_formatting = '%(asctime)s ' + self.name + '.%(name)s %(levelname)s %(message)s'
+#        self.file.formatter = pylogging.Formatter(self.file.strformat)
+#        self.file.handler = pylogging.FileHandler('%s.log' % app_basenamenosuff)
+#        self.file.handler.setFormatter(self.file.formatter)
+#        root_logger.addHandler(self.file.handler)
+#        
+#        # GELF Logger
+#        gelf_handler = GelfUdpHandler(host=logging_gelf_udp_host, 
+#            port=logging_gelf_udp_port, debug=True, compress=False)
+#        gelf_handler.addFilter(self.gelf_pattern_filter)
+#        root_logger.addHandler(gelf_handler)
 
         # default color highlighting in console
-        self.add_highlighter("level","error","highlight_line",termcolor.BG_ERROR)
-        self.add_highlighter("level","critical","highlight_line",termcolor.BG_ERROR)
-        self.add_highlighter("level","warning","highlight_line",termcolor.BG_WARNING)
+        self.console.add_highlighter("level","error","highlight_line",termcolor.BG_ERROR)
+        self.console.add_highlighter("level","critical","highlight_line",termcolor.BG_ERROR)
+        self.console.add_highlighter("level","warning","highlight_line",termcolor.BG_WARNING)
 
         # By default the root logger is set to WARNING and all loggers you define
         # Setting the root logger to DEBUG (lowest possible value) will result in 
@@ -320,20 +376,14 @@ class LoggingSystem():
         self.root_logger = root_logger
         
         self.logger = self.get_logger("domain")
+
+        # handler defaults
+        self.remote.add_accept_pattern("*","info")
+        self.file.add_accept_pattern("*","info")
         
+        self._configured = True
         return root_logger
 
-    def clear_highlighting_rules(self):
-        self.console_formatter.clear_highlighting_rules()
-
-    def add_highlighter(self,type,pattern,action,color,**kwargs):
-        self.console_formatter.add_highlighter(type,pattern,action,color,**kwargs)
-        
-    def add_accept_filter(self,pattern,level):
-        self.pattern_filter.add_accept_filter(pattern,level)
-        
-    def add_reject_filter(self,pattern,level):
-        self.pattern_filter.add_reject_filter(pattern,level)
 
     # We may want to find loggers matching patterns, etc
     def register_logger(self,logger):
@@ -345,7 +395,7 @@ class LoggingSystem():
         return logger
 
 
-    
+
 """
 Exception Handling
 """
@@ -353,19 +403,34 @@ from sys import exc_info
 import sys # from sys import exc_info
 import traceback
 
-def exception_context(stacklevel=1):
-    if stacklevel < 1: 
-        raise Exception("last_exception_details(stacklevel=%s) called. stacklevel must be >= 1!" % stacklevel)
+def exception_context(frame_limit=None):
+
     exc_type, exc_obj, exc_tb = exc_info()
-    exc_tb = traceback.extract_tb(exc_tb,limit=stacklevel)[-1]
-    # exc_tb is now <class 'traceback.FrameSummary'>   
-    details = {}
-    details["filename"] = exc_tb.filename.replace(app_dirnamestr,".")
-    details["method_name"] = exc_tb.name
-    details["lineno"] = exc_tb.lineno
-    details["typestr"] = exc_type.__name__
-    details["message"] = exc_obj.__str__()
-    return details
+    
+    # Traceback StackSummary is referenced to most recent exception
+    # 0 is the furthest from the exception itself
+    stack_summary = traceback.extract_tb(exc_tb) # StackSummary
+    
+    # Reverse it so we may work from exception backwards
+    stack_summary.reverse()
+    
+    traceback_frames = []
+    
+    for i in range(len(stack_summary)):
+        frame = stack_summary[i] # 'traceback.FrameSummary'
+        
+        tb_f = {}
+        tb_f["filename"] = getattr(frame,"filename","").replace(app_dirnamestr,".")
+        tb_f["method_name"] = getattr(frame,"name",None)
+        tb_f["lineno"] = getattr(frame,"lineno",None)
+        tb_f["typestr"] = exc_type.__name__
+        tb_f["message"] = exc_obj.__str__()
+        traceback_frames.append(tb_f)
+
+        if frame_limit and i >= frame_limit:
+            break
+
+    return traceback_frames
 
 def troubleshoot_hanging_shutdown():
     print("## Troubleshoot Hanging Shutdown ##")
@@ -410,8 +475,33 @@ import configparser
 class Config():
 
     required = False
-    data = None
+    data = {}
+    configparser = None
     loaded = False
+    
+    def get(self,section,key=None):
+        if self.has_section(section):
+            if key:
+                if key in self.data[section]:
+                    return self.data[section][key]
+                else: 
+                    return None
+            else:
+                return self.data[section]
+        return None
+
+    def set(self,section,key,value):
+        if not section: 
+            return True
+        if not self.has_section(section):
+            self.data[section] = {}
+        if key: 
+            self.data[section][key] = value
+
+    def has_section(self,name):
+        if name in self.data:
+            return True
+        return False
 
     def load(self,filename=None,required=None):
 
@@ -443,16 +533,19 @@ class Config():
         
         try:
             if filename:
-                config = configparser.ConfigParser(allow_no_value=True)
+                self.configparser = configparser.ConfigParser(allow_no_value=True)
                 # This optionxform method transforms option names on every read, 
                 #  get, or set operation. The default converts the name to lowercase. 
                 #  This also means that when a configuration file gets written, 
                 #  all keys will be lowercase.
                 # Redeclare this method to prevent this transformation
                 # INI format requires that config files must have section headers
-                config.optionxform = lambda option: option
-                config.read(filename)
-                self.data = config
+                self.configparser.optionxform = lambda option: option
+                self.configparser.read(filename)
+
+                # dict object of sections
+                self.data = self.configparser._sections
+                
                 self.loaded = True
                 
             # Raise an Exception if we required a config but was not able to
@@ -541,9 +634,8 @@ def init_supervisor(**kwargs):
 
 # GO TIME
 
-logging = LoggingSystem()
-logging.configure_root_logger()
-
+log = LoggingSystem()
+logging = log # backwards compatibility until we stamp out domain.logging
 config = Config()
 
 initialized = True

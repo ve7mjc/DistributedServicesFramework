@@ -11,7 +11,7 @@ from datetime import datetime
 from dsf import utilities, exceptionhandling
 from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
 from dsf.amqp import amqputilities
-from dsf.amqp.amqpmessage import AmqpMessage
+from dsf.amqp.amqpmessage import AmqpConsumerMessage
 
 # This Asynchronous Consumer will operate in one of two modes:
 # - Shared Queue mode: If a reference to a Queue object is passed in to the 
@@ -62,7 +62,8 @@ class AsynchronousConsumer(AsynchronousClient):
     
     def __init__(self, **kwargs):
 
-        self._queue = kwargs.get("queue", None)
+        self.config_init(**kwargs)
+        self._queue = self.config.get("queue")
         
         self._received_messages_queue = kwargs.get("message_queue", None)
         self._strip_routing_key_prefix = kwargs.get("strip_key_prefix", None)
@@ -75,7 +76,7 @@ class AsynchronousConsumer(AsynchronousClient):
         #if not self._queue: self.set_failed("a queue has not been specified")
         
     def pre_run_checks(self):
-        if not self._queue: self.set_failed("queue not defined")
+        if not self._queue: self.set_failed("AMQP Consumer Queue not specified")
 
     # Called when the underlying AMQP Client is ready
     # The TCP (or TLS) connection is established, channel is open, 
@@ -193,7 +194,7 @@ class AsynchronousConsumer(AsynchronousClient):
                 method.routing_key = amqputilities.remove_routing_key_prefix(
                     method.routing_key,self._strip_routing_key_prefix)
             
-            amqp_message = AmqpMessage.from_pika(method, properties, body)
+            message = AmqpConsumerMessage.from_pika(method, properties, body)
             
             wrote_message = False
             # Determine where this message needs to go based on configuration
@@ -203,7 +204,7 @@ class AsynchronousConsumer(AsynchronousClient):
             # Function = on_message(AmqpMessage())
             if hasattr(self,"on_message"):
                 #self.logger.debug("Message # %s -> self.on_message(..); routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
-                self.on_message(amqp_message)
+                self.on_message(message)
                 wrote_message = True
             
             # OPTION 2 - Write to a shared Queue()
@@ -211,7 +212,7 @@ class AsynchronousConsumer(AsynchronousClient):
             # constructor. This occurs when this consumer is attached to 
             # a MessageProcessingPipeline
             elif self._received_messages_queue:
-                self._received_messages_queue.put(amqp_message)
+                self._received_messages_queue.put(message)
                 self.log_debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (method.delivery_tag, method.routing_key, len(body)))
             
             # OPTION 3 - Call a callback function which has been passed to us
@@ -283,6 +284,11 @@ class AsynchronousConsumer(AsynchronousClient):
                 (delivery_tag, multiple, requeue))
             cb = functools.partial(self._channel.basic_nack, delivery_tag, multiple, requeue)
             self._connection.ioloop.add_callback_threadsafe(cb)
+    
+    def pre_start(self):
+        queue_bindings = self.config.get("queue_bindings")
+        if queue_bindings:
+            self.add_bindings(queue_bindings)
 
     # Gracefully stop the Consumer
     # Send Basic.Cancel RPC command to RabbitMQ and register callback method

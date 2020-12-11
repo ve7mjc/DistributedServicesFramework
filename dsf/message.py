@@ -46,12 +46,17 @@ class Message():
     _source_data = None
     _source_content_type = None
 
-    def __init__(self):
-        
+    def __init__(self,**kwargs):
+            
+        if "data" in kwargs and type(kwargs["data"]) is dict:
+            self._data = kwargs["data"]
+            self._type = MessageType("dict")
+
         # Container Concept
         if not hasattr(self,"_type"):
             #self.log_warning("declare a message type prior to calling Message.__init__(..)")
             self._type = MessageType()
+            
 
     # Child Factory Class Method
     # Produce child from XML string

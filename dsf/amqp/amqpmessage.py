@@ -1,116 +1,173 @@
-import pika.spec
-from pika.spec import BasicProperties, Basic
-
 from dsf.amqp import amqputilities
 from dsf.message import Message, MessageType
 
+import pika.spec
+
+"""
+For reference:
+From Consumer:
+pika channel _on_message_callback(channel,method,properties,body)
+  channel: pika.Channel 
+  method: pika.spec.Basic.Deliver 
+  properties: pika.spec.BasicProperties 
+  body: bytes
+
+pika.spec.BasicProperties
+  content_type
+  content_encoding
+  headers
+  delivery_mode
+  priority
+  correlation_id
+  reply_to
+  expiration
+  message_id
+  timestamp
+  type
+  user_id
+  app_id
+  cluster_id
+
+pika.spec.Basic.Deliver
+  consumer_tag
+  delivery_tag
+  redelivered
+  exchange
+  routing_key
+
+To Producer
+
+pika.channel.publish(exchange, routing_key, body, properties=None, mandatory=False)
+  exchange - exchange to publish to - can be blank for default exchange
+  properties - pika.spec.Basic.properties
+  mandatory bit - This flag tells the server how to react if the message cannot be
+  routed to a queue. If this flag is set, the server will return an unroutable
+  message with a Return method. If this flag is zero, the server silently drops
+  the message. 
+  
+def __repr__(self):
+    items = list()
+    for key, value in self.__dict__.items():
+        if getattr(self.__class__, key, None) != value:
+            items.append('%s=%s' % (key, value))
+    if not items:
+        return "<%s>" % self.NAME
+    return "<%s(%s)>" % (self.NAME, sorted(items))
+  
+
+"""
+
+# The only common attributes to an AMQP message between the Consumer and
+#  producer is the body and BasicProperties
 class AmqpMessage(Message):
-    
-#    _name = None
-    
-    _exchange = None
-    _routing_key = None
+
     _body = None
     _properties = None
-    _method = None
-
+    
     def __init__(self, **kwargs):
-        self._type = MessageType("amqp","AMQPMessage")
+        self._body = kwargs.get("body",None)
+        self.set_properties(kwargs.get("properties",None))
         super().__init__(**kwargs)
-        
-#    @property
-#    def name(self): return self._name
 
-    @property
-    def exchange(self):
-        return self._exchange
-        
-    @exchange.setter
-    def exchange(self,value):
-        self._exchange = value
-        
-    @property
-    def routing_key(self):
-        return self._routing_key
-        
-    @routing_key.setter
-    def routing_key(self,value):
-        self._routing_key = value
-        
-    def remove_routing_key_prefix(self,prefix):
-        self._routing_key = amqputilities.remove_routing_key_prefix(self._routing_key,prefix)
-        
     @property
     def body(self):
         return self._body
         
-    @body.setter
-    def body(self,value):
-        self._body = value
-        
     @property
     def properties(self):
-        if not self._properties:
-            return BasicProperties()
-        else:
-            return self._properties
-
-    @properties.setter
-    def properties(self,value):
+        if not self._properties or self._properties is None:
+            self._properties = pika.spec.BasicProperties()
+        return self._properties
+        
+    def set_properties(self,value=pika.spec.BasicProperties):
+        # ensure we apply persistence if desired and missed
+        if hasattr(self,"_persistant") and self._persistent:
+            value.delivery_mode = 2
         self._properties = value
         
-    @property
-    def method(self):
-        return self._method
+    def set_body(self,value):
+        self._body = value
+
+# Message received during consuming from a Consumer
+class AmqpConsumerMessage(AmqpMessage):
+
+    _method = None
+    # properties in parent class
+    # body in parent class
     
-    # no method.setter to avoid confusion
+    def __init__(self, **kwargs):
+        self._type = MessageType("amqp_c","AmqpConsumerMessage")
+        super().__init__(**kwargs)
+
+    @property
+    def method(self): 
+        return self._method
+
     def set_method(self,method):
-        if method and hasattr(method,"routing_key"):
-            self._routing_key = method.routing_key
         self._method = method
+    
+    @classmethod
+    def from_pika(cls,method,properties,body):
         
-    def __str__(self):
-        output = "exchange=%s, routing_key=%s, body=%s, properties=%s" % (self.exchange, self.routing_key, self.body, self.properties)
-        return output
+        if not (isinstance(method,pika.spec.Basic.Deliver)):
+            raise Exception("type(basic_deliver) is %s; but should be "
+                "<class 'pika.spec.Basic.Deliver'>" % type(basic_deliver))
+        if not (isinstance(properties,pika.spec.BasicProperties)):
+            raise Exception("type(properties) is %s; but should be "
+                "<class 'pika.spec.BasicProperties'>" % type(properties))
+        try:
+            obj = cls()
+            #print(type(cls.__name__))
+            obj.set_method(method)
+            obj.set_properties(properties)
+            obj.set_body(body)
+            return obj
+
+        except Exception as e:
+            raise Exception(e)
+
+
+# Message constructed to be published by Producer
+class AmqpProducerMessage(AmqpMessage):
+    
+    _exchange = None
+    _routing_key = None
+    # body in parent class
+    # properties in parent class
+    _mandatory = False
+    
+    def __init__(self, **kwargs):
+        self._type = MessageType("amqp_p","AmqpProducerMessage")
+        super().__init__(**kwargs)
+    
+    @property
+    def exchange(self): 
+        return self._exchange
+
+    @property
+    def routing_key(self): 
+        return self._routing_key
+
+    @property
+    def mandatory(self):
+        return self._mandatory
+
+    def set_exchange(self,value):
+        self._exchange = value
+
+    def set_routing_key(self,value): 
+        self._routing_key = value
+        
+    def set_mandatory(self,value=True):
+        self._mandatory = value
 
     @classmethod
     def from_kwargs(cls,**kwargs):
-        message = AmqpMessage()
-        if "routing_key" in kwargs: message.routing_key = kwargs["routing_key"]
-        message.exchange = kwargs.get("exchange", None)
-        message.set_method(kwargs.get("basic_deliver", None))
-        message.body = kwargs.get("body", None)
-        message.properties = kwargs.get("properties", None)
-        return message
-
-    @classmethod
-    def from_pika(cls,method,properties,body):
-
-        if not (isinstance(method,pika.spec.Basic.Deliver)):
-            raise Exception("type(basic_deliver)==%s but should be <class 'pika.spec.Basic.Deliver'>" % (type(basic_deliver)))
-        if not (isinstance(properties,pika.spec.BasicProperties)):
-            raise Exception("type(properties)==%s but should be <class 'pika.spec.BasicProperties'>" % (type(properties)))
-
-        try:
-            message = cls()
-            #message.amqp = {}
-
-            # <class 'pika.spec.Basic.Deliver'>
-            # Basic.Deliver has 'consumer_tag', 'decode', 'delivery_tag', 'encode', 
-            #  'exchange', 'get_body', 'get_properties', 'redelivered', 
-            #  'routing_key', 'synchronous'
-            message.set_method(method)
-            
-            # <class 'pika.spec.BasicProperties'>
-            # BasicProperties has: 'app_id', 'cluster_id', 'content_encoding', 
-            # 'content_type', 'correlation_id', 'decode', 'delivery_mode', 
-            # 'encode', 'expiration', 'headers', 'message_id', 'priority', 
-            # 'reply_to', 'timestamp', 'type', 'user_id'
-            message.properties = properties
-
-            # body is <class 'bytes'>
-            message.body = body
-            
-            return message
-        except Exception as e:
-            raise Exception(e)
+        obj = cls(**kwargs)
+        obj.set_exchange(kwargs.get("exchange", None))
+        obj.set_routing_key(kwargs.get("routing_key",None))
+        # add disk persistance request to message
+        obj.properties.delivery_mode = 2
+        if "mandatory" in kwargs:
+            obj.set_mandatory(kwargs["mandatory"])
+        return obj

@@ -6,7 +6,7 @@ from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
 from dsf.amqp.asynchronousconsumer import AsynchronousConsumer
 from dsf.amqp.asynchronousproducer import AsynchronousProducer
 #from dsf.amqp.amqputilities import amqputilities
-from dsf.amqp.amqpmessage import AmqpMessage
+from dsf.amqp.amqpmessage import AmqpMessage, AmqpConsumerMessage, AmqpProducerMessage
 
 #from .amqpmessage import AmqpMessage
 

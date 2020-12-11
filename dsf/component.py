@@ -43,14 +43,52 @@
 import dsf.domain
 
 from dsf.event import *
-#from dsf.event import *
-#from dsf.agent import Agent
 
 from enum import Enum
 import logging
 from threading import Thread
 from time import sleep, perf_counter
 import queue
+
+# Config retrieves configuration for this component from multiple sources
+# - ConfigParser object 
+# Component(tag) == Section
+class Config():
+    
+    data = {}
+    shared_section = None
+ 
+    def __init__(self,config_section,**kwargs):
+
+        self.shared = dsf.domain.config
+        self.shared_section = config_section
+
+        self.add_kwargs(kwargs)
+        self.add_shared()
+        
+    def add_shared(self):
+        if not self.shared.has_section(self.shared_section):
+            return True
+
+        section_items = self.shared.get(self.shared_section)
+        if section_items:
+            for key in section_items:
+                self.data[key] = section_items[key]
+
+    def add_kwargs(self,kwargs):
+        for key in kwargs:
+            if key != "configparser_section":
+                self.data[key] = kwargs[key]
+            
+    def get(self,key,default=None):
+        if key in self.data:
+            return self.data[key]
+        else: 
+            return default
+            
+    def set(self,key,value):
+        self.data[key] = value
+        # not doing shared mirror
 
 # start() instruct component to become ready; if threaded, thread will start
 # stop() instruct component to stop activity/work; thread will stop; expect
@@ -68,7 +106,13 @@ import queue
 #  testing requirements
 #
 class Component():
-
+    
+    # Component-level configuration driven from global level configuration
+    #  eg. disk-based ini, etc
+    # defaults to self.__class__.__name__ in Component.config_init()
+    _config_section = None
+    _config = None
+    
     # the presence of a key indicates it is enabled and a value
     # indicates a setting of other True or mode specific value
     # this will not be accessible outside this class, instead use the property
@@ -114,16 +158,18 @@ class Component():
     _thread = None
     _start_required = False
     _stop_required = False
-    
-    #_agent = None
-    
+
     def __init__(self, **kwargs):
         try:
+
             # default name to that of child class type
             #  allow keyword argument specification
             if "name" in kwargs: self._name = kwargs["name"]
             if not hasattr(self,"_name"):
                 self._name = self.__class__.__name__
+            
+            # Map global config to component level using self._config_section
+            self.config_init(**kwargs)
             
             # reference to a thread-safe queue to write all of our events
             self._central_events_queue = dsf.domain.component_events
@@ -132,9 +178,11 @@ class Component():
             if self._threaded:
                 self._start_required = True
                 self._stop_required = True
-                self._thread = Thread(target=self._run,name="%s-thread" % self.name)
-
-            self._logger_name = kwargs.get("logger_name", self.get("_logger_name", self.name))
+                self._thread = Thread(target=self._run,
+                    name="%s-thread" % self.name)
+            
+            self._logger_name = kwargs.get("logger_name",
+                self.get("_logger_name",self.name.lower()))
             self._logger = dsf.domain.logging.get_logger(self._logger_name)
             self.set_loglevel(kwargs.get("loglevel","debug"))
             
@@ -142,18 +190,19 @@ class Component():
             #    logging output above this! **
             
             if self._name != self.__class__.__name__: 
-                self.log_debug("initializing %s <class '%s'>" % (self._name,self.__class__.__name__))
-            else: self.log_debug("initializing <class '%s'>" % self.__class__.__name__)
+                self.log_debug("initializing %s <class '%s'>" 
+                    % (self._name,self.__class__.__name__))
+            else:
+                self.log_debug("initializing <class '%s'>" 
+                    % self.__class__.__name__)
 
             dsf.domain.register_component(self)
             
-            # Set our status to ready if not Threaded and do not require start() 
-            # to be called
+            # Set our status to ready if not Threaded and do not require start()
+            #  to be called
             if not self._start_required:
                 self.set_ready()
-                
-            self._pre_logger_log_messages() # deprecate?
-            
+
             self._initialized = True
 
             super().__init__()
@@ -161,7 +210,8 @@ class Component():
             self.report_event(ComponentEvent.Created)
             
         except Exception as e:
-            component_name = getattr(self,_name,self.__class__.__name__)
+            print(e.__str__())
+            component_name = getattr(self,"_name",self.__class__.__name__)
             self.set_failed(component_name)
             self.log_exception()
             
@@ -172,16 +222,31 @@ class Component():
             if value is None: return default
             else: return value
         else: return default
+    
+    # Map global configuration to component level
+    # class method so that child classes have the option to obtain 
+    #  configuration prior to calling this class constructor 
+    def config_init(self,**kwargs):
+        if not self._config_section:
+            self._config_section = self.__class__.__name__
+        self._config = Config(self._config_section,**kwargs)
+
+    @property
+    def config(self): 
+        return self._config
               
     # whether this class init method has been called
     # shall only be set by the init mothod of this class
     @property
-    def initialized(self): return self._initialized
-
-    def set_name(self, name): self._name = name
+    def initialized(self): 
+        return self._initialized
+        
+    def set_name(self, name): 
+        self._name = name
 
     @property
-    def name(self): return self._name
+    def name(self): 
+        return self._name
 
     @property
     def thread(self): return self._thread
@@ -278,57 +343,97 @@ class Component():
     # Convenience method to point us to class logger instance while also
     #  permitting features such as enqueing a log message prior to logger 
     #  creation
+    # stacklevel 1 is default
+    # stackback 0 == stacklevel 1
     def log(self,level,msg,*args,**kwargs):
-        if not isinstance(msg, str): msg = str(msg)
+        # stacklevel 
+        kwargs["stacklevel"] = kwargs.get("stackback", 0) + 2 # def level 1
+        if not isinstance(msg, str): 
+            msg = str(msg)
         if kwargs.get("squashlines",None):
             msg = msg.replace("\r", "").replace("\n", "")
             del kwargs["squashlines"]
         if self._logger:
+            del kwargs["stackback"]
             self._logger.log(level,msg,*args,**kwargs)
-        else:
-            log_message = (level,msg,args,kwargs)
-            if not self._prelogger_log_messages: 
-                self._prelogger_log_messages = []
-            self._prelogger_log_messages.append(log_message)
-            
+#        else:
+#            log_message = (level,msg,args,kwargs)
+#            if not self._prelogger_log_messages: 
+#                self._prelogger_log_messages = []
+#            self._prelogger_log_messages.append(log_message)
+    
     def log_error(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
         self.log(logging.ERROR,msg,*args,**kwargs)
     def log_warning(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
         self.log(logging.WARNING,msg,*args,**kwargs)
     def log_info(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
         self.log(logging.INFO,msg,*args,**kwargs)
     def log_debug(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
         self.log(logging.DEBUG,msg,*args,**kwargs)
     
     # Log the Exception on the stack
     # - filename, line number, and method where exception occurred
     # - exception type and message
-    def log_exception(self,stacklevel=1):
+    # keyword arguments:
+    #  exc_stackback - stack backtrack of exception, typ default (0) or 1 
+    #  stackback - stacklevel backtrack of logging call, typ default (0)
+    #   see log_{debug|info|error|etc}
+    def log_exception(self,**kwargs):
         try:
-            context = dsf.domain.exception_context()
-            source_info = "{filen}->{method}():{line}: {etype}: {msg}".format(
-                filen = context["filename"], method = context["method_name"],
-                line = context["lineno"], etype = context["typestr"],
-                msg = context["message"])
-            self.log_error(source_info,squashlines=True)
+            # we need to split the kwargs at this point since both the
+            frames = dsf.domain.exception_context(frame_limit=None)
+            
+            if "exc_stackback" in kwargs: del kwargs["exc_stackback"]
+
+            kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+            kwargs["squashlines"] = True
+            for i in range(len(frames)):
+                frame = frames[i]
+                header = "Exception"
+                if i == 0: 
+                    source_info = ("{hdr} {filen}->{method}():{line}: {etype}: {msg}"
+                        .format(hdr = header, filen = frame["filename"], 
+                        method = frame["method_name"], line = frame["lineno"], 
+                        etype = frame["typestr"], msg = frame["message"]))
+                else:
+                    header = "stack level %d:" % (len(frames)-i-1)
+                    source_info = (" {hdr} {filen}->{method}():{line}:"
+                        .format(hdr = header, filen = frame["filename"], 
+                        method = frame["method_name"], line = frame["lineno"], 
+                        ))
+
+                if not "extra" in kwargs:
+                    kwargs["extra"] = {}
+                kwargs["extra"]["print_log_call_line"] = False
+                self.log(logging.ERROR,source_info,**kwargs)
         except Exception as e:
-            self.log_error("exception in log_exception()! %s - %s" % (type(e).__name__,e.__str__()))
+            self.log_error("exception in log_exception()! %s - %s"
+                % (type(e).__name__,e.__str__()))
 
     # Dump enqueued log messages to logger
     # Create logger instance if necessary
-    def _pre_logger_log_messages(self):
-        # Create a root logger if we do not have a logger
-        logger = getattr(self,"_logger",None)
-        if not logger: logger = logging.getLogger()
-        if self._prelogger_log_messages:
-            for log_msg in self._prelogger_log_messages:
-                level,msg,args,kwargs = log_msg
-                logger.log(level,msg,*args,**kwargs)
+#    def _pre_logger_log_messages(self):
+#        # Create a root logger if we do not have a logger
+#        logger = getattr(self,"_logger",None)
+#        if not logger: logger = logging.getLogger()
+#        if self._prelogger_log_messages:
+#            for log_msg in self._prelogger_log_messages:
+#                level,msg,args,kwargs = log_msg
+#                logger.log(level,msg,*args,**kwargs)
 
     # present a start method so we may be called similar to a class which 
     # extends a Thread
     # OVERRIDING - Call this method via super().start(**kwargs) last!
+    # OR, declare a pre_start(self,**kwargs) method
     def start(self,**kwargs):
+        
+        # Pre-start method hook for child
+        if hasattr(self,"pre_start"):
+            self.pre_start(**kwargs)
         
         if not self._start_required:
             self.log_debug("start() called but self._start_required=False")
