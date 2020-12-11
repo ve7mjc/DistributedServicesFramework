@@ -46,7 +46,7 @@ class Service(Component):
             dsf.domain.register_service(self)
 
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             self.stop("fault in Service.__init__()") # call for exit, must stop constructor(s)
             exit()
         
@@ -66,7 +66,7 @@ class Service(Component):
         
         self._signal_caught = True
         self.stop("Caught %s" % strsig)
-        self.log_info("Caught SIGINT. Starting orderly shutdown")
+        self.log.info("Caught SIGINT. Starting orderly shutdown")
 
     # gracefully shut down and close resources prior to releasing our threaded
     #  worker on stop

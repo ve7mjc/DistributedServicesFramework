@@ -126,7 +126,7 @@ class AsynchronousClient(Component):
     # steps and a Producer or Consumer can now begin their specific steps.
     # Override me in a child class!
     def client_ready(self):
-        self.log_warning("AsynchronousClient.client_ready() called - needs to be overridden!")
+        self.log.warning("AsynchronousClient.client_ready() called - needs to be overridden!")
 
     # Add a routing_key pattern
     # Exchanges and Queues must be declared in order for this to be useful
@@ -158,7 +158,7 @@ class AsynchronousClient(Component):
             parameters = pika.ConnectionParameters("localhost", 5672, '/')
         
         # todo - add connection parameters to this log entry
-        self.logger.debug("Connecting to AMQP Broker")
+        self.log.debug("Connecting to AMQP Broker")
 
         return pika.SelectConnection(parameters=parameters,
                     on_open_callback=self.on_connection_open,
@@ -171,7 +171,7 @@ class AsynchronousClient(Component):
     # Open a RabbitMQ channel by sending a Channel.Open RPC Command with 
     # an on_open callback
     def on_connection_open(self, _unused_connection):
-        self.logger.debug('connection open')
+        self.log.debug('connection open')
         self._connection.channel(on_open_callback=self.on_channel_open)
 
     # Callback method called by pika if the connection to RabbitMQ 
@@ -183,7 +183,7 @@ class AsynchronousClient(Component):
         # general AMQPConnectionError exception which may have other classes wrapped
         if isinstance(error, pika.exceptions.AMQPConnectionError):
             if len(error.args) > 1:
-                self.logger.debug("heads up! pika.exceptions.AMQPConnectionError.args == %s" % len(error.args))
+                self.log.debug("heads up! pika.exceptions.AMQPConnectionError.args == %s" % len(error.args))
             else:
                 error = error.args[-1] # pass on AMQPConnectionWorkflowFailed exception
         
@@ -193,20 +193,20 @@ class AsynchronousClient(Component):
             error = error.exceptions[-1]
             
             if isinstance(error,pika.adapters.utils.connection_workflow.AMQPConnectorSocketConnectError):               
-                #self.logger.debug("isinstance(error, pika.adapters.utils.connection_workflow.AMQPConnectorSocketConnectError)")
+                #self.log.debug("isinstance(error, pika.adapters.utils.connection_workflow.AMQPConnectorSocketConnectError)")
                 
                 # TCP Timeout
                 if isinstance(error.exception,socket.timeout):
-                    self.logger.error("TCP connection attempt timed out!")
+                    self.log.error("TCP connection attempt timed out!")
 
             # Exception raised for address-related errors by getaddrinfo() and getnameinfo()
             #   eg. gaierror(-3, 'Temporary failure in name resolution')
             if (isinstance(error, socket.gaierror)):
-                self.logger.error('Connection failure: %s' % (error.strerror))
+                self.log.error('Connection failure: %s' % (error.strerror))
             
         else:
-            self.logger.error('Connection open failed: %s', type(error))
-            self.logger.debug("type(error) = %s" % type(error))
+            self.log.error('Connection open failed: %s', type(error))
+            self.log.debug("type(error) = %s" % type(error))
         
         # the ioloop stays in play despite losing the connection so we need to force
         # it to exit so we can move on with code execution in self::run()
@@ -214,7 +214,7 @@ class AsynchronousClient(Component):
 
     # Close the RabbitMQ connection
     def close_connection(self):
-        self.log_debug('closing connection')
+        self.log.debug('closing connection')
         if self._connection and self._connection.is_open and not self._connection.is_closing:
             self._connection.close()
 
@@ -225,7 +225,7 @@ class AsynchronousClient(Component):
     def on_connection_closed(self, connection, reason):
         # this connection closing was unexpected - stop() was not called
         if self.keep_working:
-            self.logger.warning('Connection closed: %s', reason)
+            self.log.warning('Connection closed: %s', reason)
         # the ioloop stays in play despite losing the connection so we need to force
         # it to exit so we can move on with code execution in self::run()
         self._connection.ioloop.stop()
@@ -242,7 +242,7 @@ class AsynchronousClient(Component):
     # Passes ika.channel.Channel handle
     # Request a on_channel_close callback and proceed with session startup
     def on_channel_open(self, channel):
-        self.logger.debug('channel opened')        
+        self.log.debug('channel opened')        
         self._channel = channel
         self._channel.add_on_close_callback(self.on_channel_closed)
         self.setup_exchange(self._exchange)
@@ -254,7 +254,7 @@ class AsynchronousClient(Component):
     # Passes the closed pika.channel.Channel and Exception reason
     def on_channel_closed(self, channel, reason):
         if self.keep_working:
-            self.logger.warning('Channel was closed unexpectedly: %s' % reason)
+            self.log.warning('Channel was closed unexpectedly: %s' % reason)
         
         # a consumer 
         if self._connection.is_open and not self._connection.is_closing: 
@@ -263,7 +263,7 @@ class AsynchronousClient(Component):
     # Cleanly close RabbitMQ channel
     # Send Channel.Close RPC command. Callback is already registered.
     def close_channel(self):
-        self.logger.debug('Closing the channel')
+        self.log.debug('Closing the channel')
         if self._channel.is_open and not self._channel.is_closing: 
             self._channel.close()
 
@@ -276,12 +276,12 @@ class AsynchronousClient(Component):
         binding['routing_key'] = routing_key
 
         self._bindings.append(binding)
-        self.log_debug("added binding: %s" % binding)
+        self.log.debug("added binding: %s" % binding)
         
     # add by dict
     def add_bindings(self, bindings):
         if type(bindings) is not list:
-            self.log_warning("bindings type is %s!" % type(bindings))
+            self.log.warning("bindings type is %s!" % type(bindings))
             return True
         for binding in bindings:
             self._bindings.append(binding)
@@ -290,7 +290,7 @@ class AsynchronousClient(Component):
     # Send the Exchange.Declare RPC command with a callback method for pika
     def setup_exchange(self, exchange_name):
         if self._exchange and self._setup_exchange_enabled:
-            self.logger.debug('declaring exchange: %s', exchange_name)
+            self.log.debug('declaring exchange: %s', exchange_name)
             cb = functools.partial(
                 self.on_exchange_declare, userdata=exchange_name)
             self._channel.exchange_declare(
@@ -306,7 +306,7 @@ class AsynchronousClient(Component):
     # :param pika.Frame.Method method_frame Exchange.DeclareOk response
     # :param str|unicode userdata: Extra user data (exchange name)
     def on_exchange_declare(self, method_frame, userdata):
-        self.logger.info('Exchange declared: %s', userdata)
+        self.log.info('Exchange declared: %s', userdata)
         self.setup_queue(self._queue)
 
     # Setup queue on RabbitMQ
@@ -324,7 +324,7 @@ class AsynchronousClient(Component):
     # We may now begin Exchange<>Queue routing_key bindings
     # TODO: Confirm OK in frame?
     def on_queue_declare(self, method_frame, userdata):
-        self.logger.debug('declared queue: %s', userdata)
+        self.log.debug('declared queue: %s', userdata)
         self.do_queue_binds()
 
     # write/load a json file from disk containing a list of queues and bindings
@@ -342,13 +342,13 @@ class AsynchronousClient(Component):
             try:
                 with open(self._bindings_cache_filename) as json_cache:
                     bindings_cache = json.load(json_cache)
-                    self.logger.debug("loaded %s queue bindings from %s: " % (len(bindings_cache), self._bindings_cache_filename))
+                    self.log.debug("loaded %s queue bindings from %s: " % (len(bindings_cache), self._bindings_cache_filename))
                     if len(bindings_cache):
                         return bindings_cache
             except FileNotFoundError:
                 pass # this is OK
             except Exception as e:
-                self.logger.error("error loading queue bindings cache %s" % e)
+                self.log.error("error loading queue bindings cache %s" % e)
 
         return []                    
         #raise Exception("self._bindings_cache_filename not populated")
@@ -379,13 +379,13 @@ class AsynchronousClient(Component):
                         self._bindings_to_cleanup.append(cached_binding)
 
                 num_bindings_to_cleanup = len(self._bindings_to_cleanup)
-                self.logger.debug("there are %s queue bindings to cleanup" % num_bindings_to_cleanup)
+                self.log.debug("there are %s queue bindings to cleanup" % num_bindings_to_cleanup)
                 
                 # check to see if there are bindings to clean 
                 # ONLY if we have been directed to do so
                 if self._bindings_cleanup_enabled and len(self._bindings_to_cleanup):
                     binding = self._bindings_to_cleanup.pop()
-                    self.logger.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
+                    self.log.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
                     self._channel.queue_unbind(binding['queue'], binding['exchange'], routing_key=binding['routing_key'], callback=self.do_queue_bindings_cleanup)
                 else:
                     # there are either no bindings to cleanup or we are 
@@ -394,17 +394,17 @@ class AsynchronousClient(Component):
                     self._client_ready()
 
             except Exception as e:
-                self.logger.error(e)
+                self.log.error(e)
 
         else: 
             # We are in a callback return.
             self._bindings_unbound += 1
             if len(self._bindings_to_cleanup):
                 binding = self._bindings_to_cleanup.pop()
-                self.logger.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
+                self.log.debug("calling queue_unbind(%s,%s,routing_key=%s" % (binding['queue'],binding['exchange'],binding['routing_key']))
                 self._channel.queue_unbind(binding['queue'], binding['exchange'], routing_key=binding['routing_key'], callback=self.do_queue_bindings_cleanup)
             else:
-                self.logger.info("cleaned up %s bindings" % self._bindings_unbound)
+                self.log.info("cleaned up %s bindings" % self._bindings_unbound)
                 del self._bindings_to_cleanup
                 del self._bindings_unbound
                 self.write_queue_bindings_cache()
@@ -419,18 +419,18 @@ class AsynchronousClient(Component):
             # check if we are in a callback
             if type(callback) is pika.frame.Method:
                 if type(callback.method) is pika.spec.Queue.BindOk:
-                    self.logger.debug('routing key binded: %s', self._bindings[self._queues_bound-1])
+                    self.log.debug('routing key binded: %s', self._bindings[self._queues_bound-1])
                 else:
-                    self.logger.error("routing key NOT binded: %s", self._bindings[self._queues_bound-1])
+                    self.log.error("routing key NOT binded: %s", self._bindings[self._queues_bound-1])
 
             # check if we are either done, or have no bindings to do
             if self._queues_bound < len(self._bindings):
                 binding = self._bindings[self._queues_bound]
-                self.logger.debug("channel.queue_bind(%s,%s,routing_key=%s)" % (binding['queue'], binding['exchange'], binding['routing_key']))
+                self.log.debug("channel.queue_bind(%s,%s,routing_key=%s)" % (binding['queue'], binding['exchange'], binding['routing_key']))
                 self._channel.queue_bind(binding['queue'], binding['exchange'], routing_key=binding['routing_key'], callback=self.do_queue_binds)
                 self._queues_bound += 1
             else:
-                self.logger.debug("done adding %s routing_key bindings" % (int(self._queues_bound)))
+                self.log.debug("done adding %s routing_key bindings" % (int(self._queues_bound)))
                 self.do_queue_bindings_cleanup()
         else:
             self.do_queue_bindings_cleanup()
@@ -457,15 +457,15 @@ class AsynchronousClient(Component):
                 self._connection = self.connect() 
                 
                 # block here until released
-                self.log_debug("calling self._connection.ioloop.start()")
+                self.log.debug("calling self._connection.ioloop.start()")
                 try:
                     self._connection.ioloop.start()
                 except Exception as e:
                     print(type(e))
-                    self.log_exception()
+                    self.log.exception()
                     pass
-                    #self.log_exception(e)
-                self.log_debug("passed self._connection.ioloop.start()")
+                    #self.log.exception(e)
+                self.log.debug("passed self._connection.ioloop.start()")
 
                 # We have disconnected
                 # Was this requested, and if not, is automatic reconnect enabled?
@@ -478,14 +478,14 @@ class AsynchronousClient(Component):
                     
                     if not self._reconnect_attempts:
                         # first reconnect attempt
-                        self.logger.info("reconnecting..")
+                        self.log.info("reconnecting..")
                         self._reconnect_attempts = 1
                     else:
                         # 1,2,4,8,16,32,64,128, etc
                         delay_time = self._reconnect_attempts * self._reconnect_attempts 
                         max_delay_time = 120
                         if delay_time > max_delay_time: delay_time = max_delay_time
-                        self.logger.info("delaying reconnect attempt # %s for %s seconds" % (self._reconnect_attempts,delay_time))
+                        self.log.info("delaying reconnect attempt # %s for %s seconds" % (self._reconnect_attempts,delay_time))
                         
                         self._reconnect_attempts += 1
                         
@@ -506,18 +506,18 @@ class AsynchronousClient(Component):
                     break
 
             except Exception as e:
-                self.log_exception(stacklevel=4)
+                self.log.exception(stacklevel=4)
                 self.set_failed("exception in run loop")
                 return
 
         # we have completed work in this method
-        self.logger.debug('thread exiting')
+        self.log.debug('thread exiting')
 
     # call this method if you would like to gracefully shut down the consumer
     # this will result in the thread exiting once the ioloop has completed
     def stop(self,reason=None):
         
-        self.log_debug("asynchronousclient.stop() called")
+        self.log.debug("asynchronousclient.stop() called")
         super().stop(reason)
         
         # No methods in this class, nor other threads are safe to interact 
@@ -529,11 +529,11 @@ class AsynchronousClient(Component):
         #  then connection
         if hasattr(self,"stop_activity"):
             if self._connection and self._connection.is_open and not self._connection.is_closing:
-                self.log_debug("calling stop_activity with threadsafe callback")
+                self.log.debug("calling stop_activity with threadsafe callback")
                 self._connection.ioloop.add_callback_threadsafe(self.stop_activity)
             else:
                 if not self._connection:
-                    self.log_warning("client.stop() called but self._connection = (%s)" % (type(self._connection)))
+                    self.log.warning("client.stop() called but self._connection = (%s)" % (type(self._connection)))
                 else:
-                    self.log_warning("client.stop() called but self._connection.is_open = %s, self._connection.is_closing=%s" 
+                    self.log.warning("client.stop() called but self._connection.is_open = %s, self._connection.is_closing=%s" 
                         % (self._connection.is_open,self._connection.is_closing))

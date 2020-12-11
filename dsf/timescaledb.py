@@ -55,12 +55,12 @@ class Writer(MessageOutputAdapter):
                     placeholders = ', '.join(['%s'] * len(sqldict))
                     columns = ', '.join(sqldict.keys())
                     sql = "INSERT INTO %s ( %s ) VALUES ( %s )" % (self._db_table, columns, placeholders)
-                    self.log_debug(sql)
+                    self.log.debug(sql)
                     curs.execute(sql, list(sqldict.values())) # Note: no % operator
             return "ack"
         except Exception as e:
-            self.log_exception()
-            self.log_error(e.__repr__())
+            self.log.exception()
+            self.log.error(e.__repr__())
             return True
 
     def start(self):
@@ -75,9 +75,9 @@ class Writer(MessageOutputAdapter):
     def connect(self):
         try:
             self.pg_conn = psycopg2.connect(self.db_uri)
-            self.log_info("connected to postgresql")
+            self.log.info("connected to postgresql")
         except:
-            self.log_exception()
+            self.log.exception()
     
 #    def run(self):
 # 
@@ -86,7 +86,7 @@ class Writer(MessageOutputAdapter):
 #            if self.condition.wait(timeout=0.05) == False:
 #                continue
 #
-#            self.log_debug("releasing from condition.wait()")
+#            self.log.debug("releasing from condition.wait()")
 #
 #            try:
 #                message = self.message_queue.get_nowait()
@@ -98,7 +98,7 @@ class Writer(MessageOutputAdapter):
 #            except Empty:
 #                pass
 #
-#        self.log_info("shutting down psycopg2 adapter!")
+#        self.log.info("shutting down psycopg2 adapter!")
 #
 #        
 #        self.pg_conn.close()

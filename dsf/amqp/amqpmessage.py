@@ -73,18 +73,6 @@ class AmqpMessage(Message):
     def body(self):
         return self._body
         
-    @property
-    def properties(self):
-        if not self._properties or self._properties is None:
-            self._properties = pika.spec.BasicProperties()
-        return self._properties
-        
-    def set_properties(self,value=pika.spec.BasicProperties):
-        # ensure we apply persistence if desired and missed
-        if hasattr(self,"_persistant") and self._persistent:
-            value.delivery_mode = 2
-        self._properties = value
-        
     def set_body(self,value):
         self._body = value
 
@@ -105,7 +93,14 @@ class AmqpConsumerMessage(AmqpMessage):
 
     def set_method(self,method):
         self._method = method
-    
+        
+    @property
+    def properties(self):
+        return self._properties
+        
+    def set_properties(self,properties):
+        self._properties = properties
+
     @classmethod
     def from_pika(cls,method,properties,body):
         
@@ -135,6 +130,7 @@ class AmqpProducerMessage(AmqpMessage):
     # body in parent class
     # properties in parent class
     _mandatory = False
+    _persistent = True
     
     def __init__(self, **kwargs):
         self._type = MessageType("amqp_p","AmqpProducerMessage")
@@ -147,6 +143,21 @@ class AmqpProducerMessage(AmqpMessage):
     @property
     def routing_key(self): 
         return self._routing_key
+        
+    @property
+    def properties(self):
+        if not self._properties:
+            self.set_properties()
+        return self._properties
+        
+    def set_properties(self,properties=None):
+        if not properties and not self._properties:
+            self._properties = pika.spec.BasicProperties()
+        else:
+            self._properties = properties
+        
+        if self._persistent:
+            self._properties.delivery_mode = 2
 
     @property
     def mandatory(self):
@@ -154,20 +165,20 @@ class AmqpProducerMessage(AmqpMessage):
 
     def set_exchange(self,value):
         self._exchange = value
-
+    
     def set_routing_key(self,value): 
         self._routing_key = value
-        
+    
     def set_mandatory(self,value=True):
         self._mandatory = value
 
     @classmethod
     def from_kwargs(cls,**kwargs):
+        
         obj = cls(**kwargs)
+        obj._persistent = kwargs.get("persistent", True)
         obj.set_exchange(kwargs.get("exchange", None))
-        obj.set_routing_key(kwargs.get("routing_key",None))
-        # add disk persistance request to message
-        obj.properties.delivery_mode = 2
-        if "mandatory" in kwargs:
-            obj.set_mandatory(kwargs["mandatory"])
+        obj.set_routing_key(kwargs.get("routing_key", None))
+        obj.set_properties(kwargs.get("properties", None))
+        obj.set_mandatory(kwargs.get("mandatory", True))
         return obj

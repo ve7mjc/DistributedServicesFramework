@@ -90,7 +90,7 @@ class Supervisor(Component):
             #self.log_queue = dsf.domain.logging.queue
             
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
         
     @property
     def amqp_producer(self): return self._amqp_producer
@@ -101,7 +101,7 @@ class Supervisor(Component):
     # register a service with this supervisor?
     def register_service(self,service_obj):
         self.service = service_obj
-        self.log_debug("Registered Service %s" % service_obj.name)
+        self.log.debug("Registered Service %s" % service_obj.name)
 
     # add a watchdog that looks for a statistics call on a particular
     # field and times out when time is reached without activity
@@ -112,12 +112,12 @@ class Supervisor(Component):
     # call once per second
     def check_watchdogs(self):
         for watchdog in self._watchdogs:
-            if watchdog.check(): self.logger.info("watchdog %s has timed out!" % watchdog.name)
+            if watchdog.check(): self.log.info("watchdog %s has timed out!" % watchdog.name)
 
     # called every time period
     def do_task(self):
         for metric_type in self.statistics.metrics_types:
-            self.log_debug("%s: %s" % (metric_type, self.statistics.get_metric(metric_type)))
+            self.log.debug("%s: %s" % (metric_type, self.statistics.get_metric(metric_type)))
     
     def register_periodic_task(self, function, time_seconds=1, **kwargs):
         task = {}
@@ -138,7 +138,7 @@ class Supervisor(Component):
             if task_name == task["name"]:
                 task["paused"]=True
                 return False
-        self.logger.error("Periodic Task %s does not exist! Cannot stop." % task_name)
+        self.log.error("Periodic Task %s does not exist! Cannot stop." % task_name)
         return True
     
     def do_task_scheduling(self):
@@ -151,19 +151,19 @@ class Supervisor(Component):
                     try: # we cannot jeopordize other tasks
                         task_function()
                     except Exception as e:
-                        self.logger.error("periodic task %s has thrown an exception! %s" % (task["name"],exceptionhandling.traceback_string(e)))
-                else: self.logger.error("periodic task %s function is not callable!" % task["name"])
+                        self.log.error("periodic task %s has thrown an exception! %s" % (task["name"],exceptionhandling.traceback_string(e)))
+                else: self.log.error("periodic task %s function is not callable!" % task["name"])
 
     def task_statistics_to_log(self):
         pass
-        #self.log_info(self.statistics.stats_string_test())
+        #self.log.info(self.statistics.stats_string_test())
 
     def task_one(self):
         self.stop_periodic_task("task_one")
         print("task 1!")
 
 #    def register_event(self,agent_obj,event):
-#        self.log_info("Event: %s %s %s" % (event.timestamp,event.component.name,event.type))
+#        self.log.info("Event: %s %s %s" % (event.timestamp,event.component.name,event.type))
 #        if self.keep_running:
 #            self.producer.publish(routing_key="monitor.status",body="testing!",blocking=True)
 
@@ -190,7 +190,7 @@ class Supervisor(Component):
                         self._heartbeats[event["component"]] = event
                     else: report_event = True
                     
-#                    self.log_debug("Received Event <%s> from %s; reporting=%s" % 
+#                    self.log.debug("Received Event <%s> from %s; reporting=%s" % 
 #                        (event.data["type"], event.data["component"], report_event))
                     
                     # too much traffic right now
@@ -202,7 +202,7 @@ class Supervisor(Component):
                 except Empty: break
                     
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             
     def wait_components_ready(self,components,timeout_secs=3):
         started_time = utilities.utc_timestamp()
@@ -215,7 +215,7 @@ class Supervisor(Component):
                 if component.is_failed():
                     raise ComponentStartFailed(type(component).__name__)
             if components_ready == len(components):
-                self.log_debug("leaving wait_components_ready()")
+                self.log.debug("leaving wait_components_ready()")
                 return components_ready
             time.sleep(0.01) # test for impact without
     
@@ -227,7 +227,7 @@ class Supervisor(Component):
             sr = StatusReport()
             sr.data["status"] = "ok"
             # self.amqp_producer.publish(exchange="services",routing_key="services.reports.status",body=sr.to_json())
-            # self.log_debug("sending periodic service status report")
+            # self.log.debug("sending periodic service status report")
             
         except Exception as e:
             exceptionhandling.print_full_traceback_console()
@@ -237,27 +237,27 @@ class Supervisor(Component):
 #        if (utilities.utc_timestamp() - self._last_report_publish_time) >= self._minimum_check_in_time_secs:
 #            event = Event(component_name=self.name,event_type=ComponentEvent.Heartbeat)
 #            #self.amqp_producer.publish(exchange="services",routing_key="services.events",body=event.to_json())
-#            self.log_debug("have not published in %s secs; sending a heartbeat" % self._minimum_check_in_time_secs)
+#            self.log.debug("have not published in %s secs; sending a heartbeat" % self._minimum_check_in_time_secs)
 #            self._last_report_publish_time = utilities.utc_timestamp()
         
     # Called from Component.thread.start(target=_run())
     """ ### THREAD SAFETY ### """
     def run(self):
         
-        self.log_debug("monitor.run() starting")
+        self.log.debug("monitor.run() starting")
         
         try:
             self._amqp_producer.start()
             self._amqp_consumer.start()
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             return
             
         # block waiting for AMQP clients to be ready
         try:
             self.wait_components_ready([self._amqp_producer,self._amqp_consumer])
         except (ComponentStartFailed, ComponentStartTimeout) as e:
-            self.log_warning("wait_components_ready")
+            self.log.warning("wait_components_ready")
             self.set_failed("amqp clients")
             return
 
@@ -271,7 +271,7 @@ class Supervisor(Component):
         last_report_run = datetime.now().timestamp()
 
         if self.keep_working:
-            self.log_info("Supervisor running")
+            self.log.info("Supervisor running")
             self.set_ready() # this may unblock other servicse
 
         """ LOOP """
@@ -284,7 +284,7 @@ class Supervisor(Component):
                 pass
             except Exception as e:
                 print("exception in service loop")
-                self.log_exception()
+                self.log.exception()
 
         """ SHUTDOWN """
         
@@ -292,12 +292,12 @@ class Supervisor(Component):
         self.amqp_producer.stop()
         self.amqp_consumer.stop()
 
-        self.log_debug("passed amqp client stops")
+        self.log.debug("passed amqp client stops")
         
         self.amqp_producer.join(1)
         self.amqp_consumer.join(1)
         
-        self.log_debug("supervisor leaving thread run method")
+        self.log.debug("supervisor leaving thread run method")
         
     """ ### THREAD SAFETY ### """
 

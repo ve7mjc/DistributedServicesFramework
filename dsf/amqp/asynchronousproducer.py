@@ -69,7 +69,7 @@ class AsynchronousProducer(AsynchronousClient):
     # Called when the Producer is now considered ready to publish messages
     def producer_ready(self):
         
-        self.logger.debug("AMQP Producer is ready for message publishing")
+        self.log.debug("AMQP Producer is ready for message publishing")
         self._ready = True
 
         # trigger the publish of any messages places in the queue while
@@ -92,7 +92,7 @@ class AsynchronousProducer(AsynchronousClient):
         # The only way to turn this off is to close the channel and create a 
         # new one. When the message is confirmed from RabbitMQ, the
         # on_delivery_confirmation method will be invoked
-        self.logger.debug('Enabling Delivery Confirmations with Confirm.Select RPC command')
+        self.log.debug('Enabling Delivery Confirmations with Confirm.Select RPC command')
         self._channel.confirm_delivery(self._on_delivery_confirmation,
             self._on_confirm_delivery_requested)
     
@@ -118,7 +118,7 @@ class AsynchronousProducer(AsynchronousClient):
         # blocking message response?
         if self.blocking_message_id == delivery_tag:
             self.blocking_message_id = 0
-            self.log_debug("delivery confirmation of id # %s = %s" % (delivery_tag,confirmation_type))
+            self.log.debug("delivery confirmation of id # %s = %s" % (delivery_tag,confirmation_type))
             self.blocking_publish_response.put(confirmation_type)
         else:
             # we could still fire a message here but are not
@@ -146,7 +146,7 @@ class AsynchronousProducer(AsynchronousClient):
         
         # do not log this if it was likely the result of a blocking message
 #        if not self.blocking_publish_message_number:
-#            self.logger.debug('Published message producer#%s, routing_key=%s' % (self._message_number,routing_key))
+#            self.log.debug('Published message producer#%s, routing_key=%s' % (self._message_number,routing_key))
 
     # write (publish) to the channel 
     # __do_publish which is being called from the ioloop in a callback
@@ -162,8 +162,10 @@ class AsynchronousProducer(AsynchronousClient):
                 amsg.routing_key, 
                 amsg.body, 
                 amsg.properties)
+                
 
-    #        self.logger.debug("published message to channel: exchange=%s, routing_key=%s, len(body)=%s" % (
+
+    #        self.log.debug("published message to channel: exchange=%s, routing_key=%s, len(body)=%s" % (
     #                amqp_message.exchange,
     #                amqp_message.routing_key,
     #                len(amqp_message.body)
@@ -173,7 +175,7 @@ class AsynchronousProducer(AsynchronousClient):
             # as the delivery_tag           
             return self._message_number
         else:
-            self.log_warning("__do_basic_publish() called but cannot publish!")
+            self.log.warning("__do_basic_publish() called but cannot publish!")
             return None
 
     # to be called from the ioloop in a callback
@@ -184,7 +186,7 @@ class AsynchronousProducer(AsynchronousClient):
         
         # is this legit?
         if not self.can_publish():
-            self.log_error('do_publish() returned as channel is not ready')
+            self.log.error('do_publish() returned as channel is not ready')
             if message: self.blocking_publish_response.put("error")
             return
 
@@ -225,21 +227,21 @@ class AsynchronousProducer(AsynchronousClient):
                 if isinstance(kwargs["message"],AmqpProducerMessage):
                     message = kwargs.get("message")
                 else:
-                    self.log_warning("refusing to continue with a message of type %s" % message.type)
+                    self.log.warning("refusing to continue with a message of type %s" % message.type)
                     return
             else:
                 message = AmqpProducerMessage.from_kwargs(**kwargs)
 
             # inject exchange if it is not available
             if not message.exchange:
-                if not self._exchange: self.log_warning("exchange not desginated in AMQPMessage")
+                if not self._exchange: self.log.warning("exchange not desginated in AMQPMessage")
                 else: message.exchange = self._exchange
 
             # place message in outgoing Queue
             # if we are trying to do a blocking mode, there could in fact be messages
             # in the Queue already -- TODO
             if not self.can_publish() and (self.is_failed() or self.is_stopped()):
-                self.log_warning("producer.publish() called but channel and connection are not avaiable")
+                self.log.warning("producer.publish() called but channel and connection are not avaiable")
 
             # todo, do a check to see if the channel is stopping or closing
             # as we could reject this right here and right now
@@ -247,7 +249,7 @@ class AsynchronousProducer(AsynchronousClient):
                 if self.can_publish():
                     # blocking mode so we can get a message ack back immediately and
                     # pass message asynchronously to ioloop in the callback request
-                    self.log_debug("doing blocking publish!")
+                    self.log.debug("doing blocking publish!")
                     cb = functools.partial(self.__publish_callback, message)
                     self._connection.ioloop.add_callback_threadsafe(cb)
                     # now block and wait for response from message Queue
@@ -267,8 +269,8 @@ class AsynchronousProducer(AsynchronousClient):
                     return True
         
         except Exception as e:
-            self.log_exception()
-            self.logger.error("producer::publish() %s" % e.__str__())
+            self.log.exception()
+            self.log.error("producer::publish() %s" % e.__str__())
             
 
     # Gracefully this producer
@@ -278,10 +280,10 @@ class AsynchronousProducer(AsynchronousClient):
     # This method IS being called from a threadsafe callback to ioloop!
     def stop_activity(self):
         if self._channel.is_open and not self._channel.is_closing:
-            self.log_debug("self._channel.close()")
+            self.log.debug("self._channel.close()")
             self._channel.close()
         elif self._connection.is_open and not self._connection.is_closing: 
-            self.log_debug("self._connection.close()")
+            self.log.debug("self._connection.close()")
             self._connection.close()
         
     def can_publish(self):

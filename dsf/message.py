@@ -54,7 +54,7 @@ class Message():
 
         # Container Concept
         if not hasattr(self,"_type"):
-            #self.log_warning("declare a message type prior to calling Message.__init__(..)")
+            #self.log.warning("declare a message type prior to calling Message.__init__(..)")
             self._type = MessageType()
             
 

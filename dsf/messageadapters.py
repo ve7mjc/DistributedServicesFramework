@@ -34,7 +34,7 @@ class MessageAdapter(Component): # Component
     def __init__(self,**kwargs):
         
         self._pipeline_hdl = kwargs.get("pipeline_hdl", None)
-        if not self._pipeline_hdl: self.log_info("pipeline handle not supplied")
+        if not self._pipeline_hdl: self.log.info("pipeline handle not supplied")
             
         self._throttle_messages_sec = kwargs.get("throttle",None)
         
@@ -141,7 +141,7 @@ class MessageOutputAdapterAmqpProducer(AsynchronousProducer,MessageOutputAdapter
         super().__init__(**kwargs)
         
     def write(self, amqp_message):
-        self.log_debug("Wroting message %s; blocking=%s" 
+        self.log.debug("Wroting message %s; blocking=%s" 
             % (amqp_message.routing_key,self._blocking))
         return self.publish_message(amqp_message,blocking=self._blocking)
 

@@ -92,7 +92,7 @@ class AsynchronousConsumer(AsynchronousClient):
     # Consumer is ready. Messages may begin flowing.
     def consumer_ready(self):
         self._ready = True
-        self.logger.debug("AMQP Consumer is ready.")
+        self.log.debug("AMQP Consumer is ready.")
 
     # called prior to connection (and reconnection) attempt
     # declare here to quiet the base class warnings
@@ -106,16 +106,16 @@ class AsynchronousConsumer(AsynchronousClient):
         if self._ack_disabled_max_preflight:
             self._prefetch_count_pre_disable = self._prefetch_count
             self._prefetch_count = 0
-            self.logger.info("enable_no_ack_test_mode(True) called; disabling Basic.Ack RPC calls and setting prefetch to max (0) for testing")
+            self.log.info("enable_no_ack_test_mode(True) called; disabling Basic.Ack RPC calls and setting prefetch to max (0) for testing")
         else:
             self._prefetch_count = self._prefetch_count_pre_disable
             self._prefetch_count_pre_disable = None
-            self.logger.info("enable_no_ack_test_mode(False) called; enabling Basic.Ack RPC calls and setting prefetch back to %0" % self._prefetch_count_pre_disable)
+            self.log.info("enable_no_ack_test_mode(False) called; enabling Basic.Ack RPC calls and setting prefetch back to %0" % self._prefetch_count_pre_disable)
 
     # Configure Consumer Message QoS/Prefetch by sending Basic.QoS to RabbitMQ
     def set_qos(self, prefetch_count):
         if prefetch_count: # do not send if not specified
-            self.logger.debug("sending Basic.QoS (message prefetch) request for %d", self._prefetch_count)
+            self.log.debug("sending Basic.QoS (message prefetch) request for %d", self._prefetch_count)
             self._channel.basic_qos(prefetch_count=self._prefetch_count, callback=self.on_basic_qos)
         else:
             self.start_consuming()
@@ -125,7 +125,7 @@ class AsynchronousConsumer(AsynchronousClient):
     # :param pika.frame.Method method: The Basic.QosOk response frame
     # todo - confirm method_frame response
     def on_basic_qos(self, method):
-        self.logger.debug('qos/prefetch successfully set to: %d', self._prefetch_count)
+        self.log.debug('qos/prefetch successfully set to: %d', self._prefetch_count)
         self.start_consuming()
 
     # Configure Consumer and Begin
@@ -135,7 +135,7 @@ class AsynchronousConsumer(AsynchronousClient):
     #   Returns the unique RabbitMQ consumer tag
     def start_consuming(self):
         if not self._queue:
-            self.log_error("queue not supplied for AMQP Consumer. Cannot consume.")
+            self.log.error("queue not supplied for AMQP Consumer. Cannot consume.")
             return True
         try:
             self._channel.add_on_cancel_callback(self.on_consumer_cancelled_remote)
@@ -144,7 +144,7 @@ class AsynchronousConsumer(AsynchronousClient):
             self._consuming = True
             self.consumer_ready()
         except:
-            self.log_exception()
+            self.log.exception()
         
     @property
     def is_consuming(self): return self._consuming
@@ -160,7 +160,7 @@ class AsynchronousConsumer(AsynchronousClient):
         self._consumer_tag = None
         self._consuming = False
         
-        self.logger.debug('RabbitMQ acknowledged the cancellation of consumer with tag %s', consumer_tag)
+        self.log.debug('RabbitMQ acknowledged the cancellation of consumer with tag %s', consumer_tag)
         
         if self._channel.is_open: self._channel.close()
         elif self._connection.is_open: self._connection.close()
@@ -172,7 +172,7 @@ class AsynchronousConsumer(AsynchronousClient):
         self._consumer_tag = None
         self._consuming = False
         
-        self.logger.info('consumer was cancelled remotely, shutting down: %r', method_frame)
+        self.log.info('consumer was cancelled remotely, shutting down: %r', method_frame)
         
         if self._channel.is_open: self._channel.close()
         elif self._connection.is_open: self._connection.close()
@@ -203,7 +203,7 @@ class AsynchronousConsumer(AsynchronousClient):
             # Check for a derived child class method named on_message(..)
             # Function = on_message(AmqpMessage())
             if hasattr(self,"on_message"):
-                #self.logger.debug("Message # %s -> self.on_message(..); routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
+                #self.log.debug("Message # %s -> self.on_message(..); routing_key=%s; len(body)=%s" % (basic_deliver.delivery_tag, basic_deliver.routing_key, len(body)))
                 self.on_message(message)
                 wrote_message = True
             
@@ -213,7 +213,7 @@ class AsynchronousConsumer(AsynchronousClient):
             # a MessageProcessingPipeline
             elif self._received_messages_queue:
                 self._received_messages_queue.put(message)
-                self.log_debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (method.delivery_tag, method.routing_key, len(body)))
+                self.log.debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (method.delivery_tag, method.routing_key, len(body)))
             
             # OPTION 3 - Call a callback function which has been passed to us
             # Callback method has been registered with us. This is untested
@@ -222,14 +222,14 @@ class AsynchronousConsumer(AsynchronousClient):
 #                self._receive_message_callback(message)
             
             else:
-                self.logger.info("message received but neither an on_message(..) method or a message queue has been provided")
+                self.log.info("message received but neither an on_message(..) method or a message queue has been provided")
             
             # Statistics, etc?
             if wrote_message:
                 pass
 
         except Exception as e:
-            self.logger.error(exceptionhandling.traceback_string(e))
+            self.log.error(exceptionhandling.traceback_string(e))
 
     # Acknowledge message delivery
     # Send Basic.Ack RPC with the delivery to the channel 
@@ -238,11 +238,11 @@ class AsynchronousConsumer(AsynchronousClient):
     #  delivery_tags are related to a particular consumer session only
     def ack_message(self, delivery_tag, multiple=False, consumer_tag=None):
         if self.test_mode("amqp_nack_requeue_all_messages"):
-            self.log_info("ack was requested for delivery_tag=%s but test_mode(amqp_nack_requeue_all_messages) is enabled" % delivery_tag)
+            self.log.info("ack was requested for delivery_tag=%s but test_mode(amqp_nack_requeue_all_messages) is enabled" % delivery_tag)
             self.nack_message(delivery_tag, consumer_tag=consumer_tag, multiple=False, requeue=True)
             return
         if consumer_tag and consumer_tag != self._consumer_tag:
-            self.log_warning("ack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
+            self.log.warning("ack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
         else:
             try:
                 cb = functools.partial(self.__do_ack_message, delivery_tag, multiple)
@@ -250,15 +250,15 @@ class AsynchronousConsumer(AsynchronousClient):
             except ChannelWrongStateError:
                 # this was moved from a method which was calling the self._channel directly
                 # we not hot hit this exception any more
-                self.log_error("unable to ack msg # %s as channel is not open" % delivery_tag)
+                self.log.error("unable to ack msg # %s as channel is not open" % delivery_tag)
     
     # called from ioloop in a thread-safe callback
     def __do_ack_message(self, delivery_tag=0, multiple=False):
         try:
             self._channel.basic_ack(delivery_tag, multiple)
-            self.logger.debug("requesting ioloop write an ack for %s to the channel" % delivery_tag)           
+            self.log.debug("requesting ioloop write an ack for %s to the channel" % delivery_tag)           
         except ChannelWrongStateError:
-            self.logger.error("unable to ack msg # %s as channel is not open" % delivery_tag)
+            self.log.error("unable to ack msg # %s as channel is not open" % delivery_tag)
     
     # Send NACK for Message - Thread-Safe IOLoop Callback
     # channel.basic_nack(delivery_tag=None, multiple=False, requeue=True)
@@ -278,9 +278,9 @@ class AsynchronousConsumer(AsynchronousClient):
     # called from ioloop in a thread-safe callback
     def __do_nack_message(self, delivery_tag, consumer_tag=None, multiple=False, requeue=False):
         if consumer_tag and consumer_tag != self._consumer_tag:
-            self.logger.warning("nack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
+            self.log.warning("nack for delivery_tag=%s,consumer_tag=%s but current consumer tag is %s!" % (delivery_tag,consumer_tag,self._consumer_tag))
         else:
-            self.logger.debug("sending Basic.Nack message; delivery_tag=%s, multiple=%s, requeue=%s" % 
+            self.log.debug("sending Basic.Nack message; delivery_tag=%s, multiple=%s, requeue=%s" % 
                 (delivery_tag, multiple, requeue))
             cb = functools.partial(self._channel.basic_nack, delivery_tag, multiple, requeue)
             self._connection.ioloop.add_callback_threadsafe(cb)
@@ -298,9 +298,9 @@ class AsynchronousConsumer(AsynchronousClient):
     def stop_activity(self):
         # Cover a few different scenarios so we keep the noise down and
         # ensure we get a clean exit
-        self.log_debug("consumer.stop_activity() called")
+        self.log.debug("consumer.stop_activity() called")
         if self._consuming:
-            self.logger.debug('stopping consuming; sending Basic.Cancel RPC command')
+            self.log.debug('stopping consuming; sending Basic.Cancel RPC command')
             cb = functools.partial(self.on_consumer_cancelled_ok, userdata=self._consumer_tag)
             self._channel.basic_cancel(self._consumer_tag, cb)
         elif self._channel.is_open:

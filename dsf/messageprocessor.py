@@ -29,8 +29,6 @@ class MessageProcessor(Component):
         
         # pass in reference to parent (Pipeline) instance
         self._pipeline_hdl = kwargs.get("pipeline_hdl", None)
-        if not self._pipeline_hdl: 
-            self.log_info("pipeline handle not supplied")
         
         # Set logger name here as the name specified in the child 
         # MessageProcessor Class beats the name of the "processor" class
@@ -38,6 +36,9 @@ class MessageProcessor(Component):
         
         # Component constructor
         super().__init__(**kwargs)
+        
+        if not self._pipeline_hdl:
+            self.log.debug("pipeline handle not supplied")
 
     @property
     def pipeline(self):
@@ -50,7 +51,7 @@ class MessageProcessor(Component):
     # and log a message
     def set_invalid(self, reason):
         processor_name = getattr(self,self._processor_name,"unknown")
-        self.logger.error("Processor (%s) invalidated: %s" % (processor_name,reason))
+        self.log.error("Processor (%s) invalidated: %s" % (processor_name,reason))
         self._valid = False
 
     # return True and set self.valid=False if this child fails a minimum declaration
@@ -112,7 +113,7 @@ class MessageProcessor(Component):
     def reject(self,reason=None,ack=True):
         self._message_rejected = True
         self._message_rejected_reason = reason
-        self.log_debug("rejecting message for reason: %s" % reason)
+        self.log.debug("rejecting message for reason: %s" % reason)
         
     @property
     def rejected(self):

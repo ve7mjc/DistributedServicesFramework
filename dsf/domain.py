@@ -264,6 +264,110 @@ class ColoredFormatter(pylogging.Formatter):
         
         return pylogging.Formatter.format(self, fmt_record)
 
+class Logger():
+    
+    _name = None
+    _logger = None
+    
+    def __init__(self,name):
+        self._logger = pylogging.getLogger(name)
+        
+    def set_name(self,name):
+        # not certain we can rename a logger so get a new one instead
+        if self._logger: self._logger = dsf.domain.logging.get_logger(name)
+        self._name = name
+    
+    # set the logging level of a logger by name or if only one argument
+    # supplied, apply to this instance logger!
+    def set_level(self, param1, param2=None):
+        if not param2:
+            self._logger.setLevel(param1.upper())
+        else:
+            dsf.domain.logging.get_logger(param1).setLevel(param2.upper())
+    
+    # Convenience method to point us to class logger instance while also
+    #  permitting features such as enqueing a log message prior to logger 
+    #  creation
+    # stacklevel 1 is default
+    # stackback 0 == stacklevel 1
+    def log(self,level,msg,*args,**kwargs):
+        # stacklevel 
+        kwargs["stacklevel"] = kwargs.get("stackback", 0) + 2 # def level 1
+        if not isinstance(msg, str): 
+            msg = str(msg)
+        if kwargs.get("squashlines",None):
+            msg = msg.replace("\r", "").replace("\n", "")
+            del kwargs["squashlines"]
+        if self._logger:
+            del kwargs["stackback"]
+            self._logger.log(level,msg,*args,**kwargs)
+#        else:
+#            log_message = (level,msg,args,kwargs)
+#            if not self._prelogger_log_messages: 
+#                self._prelogger_log_messages = []
+#            self._prelogger_log_messages.append(log_message)
+    
+    def error(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+        self.log(pylogging.ERROR,msg,*args,**kwargs)
+        
+    def warning(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+        self.log(pylogging.WARNING,msg,*args,**kwargs)
+        
+    def info(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+        self.log(pylogging.INFO,msg,*args,**kwargs)
+        
+    def debug(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+        self.log(pylogging.DEBUG,msg,*args,**kwargs)
+    
+    # todo, add color highlighting!
+    def trace(self,msg,*args,**kwargs):
+        kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+        msg = "##### %s" % msg
+        self.log(pylogging.WARNING,msg,*args,**kwargs)
+    
+    # Log the Exception on the stack
+    # - filename, line number, and method where exception occurred
+    # - exception type and message
+    # keyword arguments:
+    #  exc_stackback - stack backtrack of exception, typ default (0) or 1 
+    #  stackback - stacklevel backtrack of logging call, typ default (0)
+    #   see log_{debug|info|error|etc}
+    def exception(self,**kwargs):
+        try:
+            # we need to split the kwargs at this point since both the
+            frames = exception_context(frame_limit=None)
+            
+            if "exc_stackback" in kwargs: del kwargs["exc_stackback"]
+
+            kwargs["stackback"] = kwargs.get("stackback", 0) + 1
+            kwargs["squashlines"] = True
+            for i in range(len(frames)):
+                frame = frames[i]
+                header = "Exception"
+                if i == 0: 
+                    source_info = ("{hdr} {filen}->{method}():{line}: {etype}: {msg}"
+                        .format(hdr = header, filen = frame["filename"], 
+                        method = frame["method_name"], line = frame["lineno"], 
+                        etype = frame["typestr"], msg = frame["message"]))
+                else:
+                    header = "stack level %d:" % (len(frames)-i-1)
+                    source_info = (" {hdr} {filen}->{method}():{line}:"
+                        .format(hdr = header, filen = frame["filename"], 
+                        method = frame["method_name"], line = frame["lineno"], 
+                        ))
+
+                if not "extra" in kwargs:
+                    kwargs["extra"] = {}
+                kwargs["extra"]["print_log_call_line"] = False
+                self.log(pylogging.ERROR,source_info,**kwargs)
+        except Exception as e:
+            self.error("exception in log_exception()! %s - %s"
+                % (type(e).__name__,e.__str__()))
+
 
 class LoggingSystem():
     
@@ -375,7 +479,7 @@ class LoggingSystem():
 
         self.root_logger = root_logger
         
-        self.logger = self.get_logger("domain")
+        self.log = self.get_logger("domain")
 
         # handler defaults
         self.remote.add_accept_pattern("*","info")
@@ -390,7 +494,7 @@ class LoggingSystem():
         self._loggers.append(logger)
         
     def get_logger(self,name):
-        logger = pylogging.getLogger(name)
+        logger = Logger(name)
         self.register_logger(logger)
         return logger
 
@@ -625,7 +729,7 @@ def init_supervisor(**kwargs):
                     print("timeout!")
                     break
     except Exception as e:
-        print(e)
+        print("domain.init_supervisor(e) = %s" % e.__repr__())
     
     # we can now go find all the components that may have started before us
 #    for component in _components:

@@ -84,7 +84,7 @@ class MessageProcessingPipeline(Service):
     # - Acceptance and Rejection Filters
     def initialize_message_processor(self, processor_name):
         if processor_name not in self._message_processors:
-            self.log_error(("requested processor by name \"%s\""
+            self.log.error(("requested processor by name \"%s\""
                 "does not exist or is not loaded!" % processor_name))
             return True
         processor = self._message_processors[processor_name]
@@ -94,7 +94,7 @@ class MessageProcessingPipeline(Service):
                 self._processor_acceptance_filters.append({
                     "routing_key_pattern":amqp_acceptance_filter,
                     "processor":processor })
-                self.logger.info("%s registered acceptance filter: "
+                self.log.info("%s registered acceptance filter: "
                     "amqp_routing_key=%s" 
                         % (processor_name,amqp_acceptance_filter))
 
@@ -121,12 +121,12 @@ class MessageProcessingPipeline(Service):
     def _load_class(self,module_name,class_name=None,**kwargs):
     
         if self.is_failed():
-            self.log_debug("refusing to load module '%s'"
+            self.log.debug("refusing to load module '%s'"
                 " as we are failed!" % module_name)
             return
             
         if not isinstance(module_name,str):
-            self.log_error("_load_class(arg) expecting a String!")
+            self.log.error("_load_class(arg) expecting a String!")
             return
 
         try:
@@ -139,7 +139,7 @@ class MessageProcessingPipeline(Service):
 
             if not class_name: class_name = kwargs.get("class","Processor")
 
-            self.log_debug("attempting to load %s from %s" 
+            self.log.debug("attempting to load %s from %s" 
                 % (class_name,module_name))
             
             # Returns the Type, and not an instance
@@ -147,16 +147,16 @@ class MessageProcessingPipeline(Service):
             module = importlib.import_module(module_name)
             for attrib in module.__dict__:
                 if attrib.lower() == class_name.lower():
-                    #self.log_debug("Matched %s to %s!" % (attrib,class_name))
+                    #self.log.debug("Matched %s to %s!" % (attrib,class_name))
                     return getattr(module,attrib)
             raise Exception("Class or method %s not found in module %s!" 
                 % (class_name,module_name))
     
         except ModuleNotFoundError as e:
-            self.log_error("%s: %s" % (adapter_type_str, e))
+            self.log.error("%s: %s" % (adapter_type_str, e))
         
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             self.set_failed("loading module.class %s.%s" % (module_name,class_name))
             return None
 
@@ -167,7 +167,7 @@ class MessageProcessingPipeline(Service):
     def add_message_processor(self,module_name,class_name=None,**kwargs):
         
         if self.is_failed():
-            self.log_debug("refusing to add_message_processor(%s,%s) "
+            self.log.debug("refusing to add_message_processor(%s,%s) "
                 "as we are failed!" % (module_name,class_name))
             return
         try:
@@ -177,7 +177,7 @@ class MessageProcessingPipeline(Service):
                     processor = self._load_class(module_name,class_name,**kwargs)
                     processor = processor(pipeline_hdl=self)
                 except Exception as e:
-                    self.log_exception(exc_stackback=1)
+                    self.log.exception(exc_stackback=1)
                     self.set_failed(e)
             elif isinstance(module_name,MessageProcessor):
                 processor = module_name
@@ -196,15 +196,15 @@ class MessageProcessingPipeline(Service):
                 self._message_processors[processor.processor_name] = processor
                 self.registerchild(processor)
                 self.initialize_message_processor(processor.processor_name)
-                self.log_info("Loaded message processor '%s' of class type '%s'"
+                self.log.info("Loaded message processor '%s' of class type '%s'"
                     " from %s" % (processor_name,class_name,module_name))
                 return processor
             else:
-                self.log_error("Error loading and validating Message "
+                self.log.error("Error loading and validating Message "
                     "Processor %s" % name)
 
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             self.set_failed(e)
  
     @property
@@ -220,7 +220,7 @@ class MessageProcessingPipeline(Service):
     def add_message_adapter(self,module_name,class_name=None,**kwargs):
 
         if self.is_failed() or self.stop_requested:
-            self.log_info("Refusing to add message adapter as we are failed or stopped!")
+            self.log.info("Refusing to add message adapter as we are failed or stopped!")
             return
         
         adapter_direction = None
@@ -278,13 +278,13 @@ class MessageProcessingPipeline(Service):
             
             # Message Adapter composition and callbacks
             self.registerchild(adapter)
-            self.logger.debug("Added <%s> Message %s Adapter"
+            self.log.debug("Added <%s> Message %s Adapter"
                 % (adapter_type_str,adapter_direction))
             return adapter
 
         except Exception as e:
-            self.log_exception()
-            self.log_warning("unable to load message adapter %s.%s" 
+            self.log.exception()
+            self.log.warning("unable to load message adapter %s.%s" 
                 % (module_name,class_name))
             self.set_failed("failed to add Message Adapter \"%s\": %s" 
                 % (adapter_type_str,e.__str__()) )
@@ -313,7 +313,7 @@ class MessageProcessingPipeline(Service):
     def start_message_adapters(self,adapters_type="all",blocking=False,timeoutsecs=3):
         
         if self.is_failed() or self.stop_requested:
-            self.log_info("Refusing to Start Adapter(s) as we are failed or stopped!")
+            self.log.info("Refusing to Start Adapter(s) as we are failed or stopped!")
             return
         
         adapters = None
@@ -325,7 +325,7 @@ class MessageProcessingPipeline(Service):
             adapters = self._input_adapters
         
         if not len(adapters):
-            self.logger.warning("start_message_adapters(%s) called but "
+            self.log.warning("start_message_adapters(%s) called but "
                 "no adapters to start!" % adapters_type)
             return 0
 
@@ -350,7 +350,7 @@ class MessageProcessingPipeline(Service):
             time.sleep(0.01) # test for impact without
         
         # we are timed out if we reached this code
-        self.log_error("%s Message Adapter(s) have timed out during startup!" 
+        self.log.error("%s Message Adapter(s) have timed out during startup!" 
             % (len(adapters)-adapters_ready))
         raise MessageAdapterStartupTimeout("%s adapter(s)" 
             % (len(adapters)-adapters_ready))
@@ -362,14 +362,14 @@ class MessageProcessingPipeline(Service):
     #  which provides stop() and @property.stopped
     def stop_message_adapters(self):
         blocking = True       
-        self.logger.debug(("Requesting %s Message Input Adapters(s) and "
+        self.log.debug(("Requesting %s Message Input Adapters(s) and "
             "%s Message Output Adapters(s) stop" 
                 % (len(self._input_adapters), len(self._output_adapters))))
         
         adapters = self._input_adapters + self._output_adapters
         for adapter in adapters:
             if hasattr(adapter,"stop"): adapter.stop()
-            else: self.logger.warning(("uh-oh! adapter %s does not have a "
+            else: self.log.warning(("uh-oh! adapter %s does not have a "
                 "stop() method!" % type(adapter).__name__))
         
         if not blocking: return len(adapters)
@@ -389,7 +389,7 @@ class MessageProcessingPipeline(Service):
                     time.sleep(0.001)
                 
             if num_adapters_stopped == len(adapters):
-                self.logger.info("%s Message Adapter(s) have stopped!" % num_adapters_stopped)
+                self.log.info("%s Message Adapter(s) have stopped!" % num_adapters_stopped)
                 return num_adapters_stopped
 
         # Time out. Build a better log message indicating which adapters have 
@@ -409,7 +409,7 @@ class MessageProcessingPipeline(Service):
 #    def add_message_type(self, message_type, **kwargs):
 #        self.__message_types[message_type] = {}
 #        for key in kwargs.keys():
-#            self.logger.debug("adding message_type['%s']['%s'] = %s" % (message_type, key, kwargs[key]))
+#            self.log.debug("adding message_type['%s']['%s'] = %s" % (message_type, key, kwargs[key]))
 #            self.__message_types[message_type][key] = kwargs[key]
 
     @property
@@ -436,7 +436,7 @@ class MessageProcessingPipeline(Service):
         for acc_filter in self._processor_acceptance_filters:
             if amqputilities.match_routing_key(routing_key, acc_filter["routing_key_pattern"]):
                 return acc_filter["processor"]
-        self.log_debug("no processor found for routing_key=%s; providing default" % routing_key)
+        self.log.debug("no processor found for routing_key=%s; providing default" % routing_key)
         if len(self._message_processors) > 0:
             for processor in self._message_processors:
                 return self._message_processors[processor]
@@ -470,8 +470,8 @@ class MessageProcessingPipeline(Service):
             try: # dont assume this subclass method will behave
                 return self.pre_process_message(input_message, message_type)
             except Exception as e:
-                self.logger.error("message processing failed in pre-processing, see next.")
-                self.log_exception()
+                self.log.error("message processing failed in pre-processing, see next.")
+                self.log.exception()
                 
 
     # wrapper function to accomodate future threads or redirection
@@ -481,14 +481,14 @@ class MessageProcessingPipeline(Service):
             if producer_response == "ack":
                 return False
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             raise Exception("_do_amqp_publish error: %s" % e)
         return True
 
     def write_message_out(self,message):
         for adapter in self._output_adapters:
             if message.type_code == "amqpmessage":
-                self.log_debug("Writing AMQP Message; routing_key=%s to %s" % (message.routing_key,adapter.name))
+                self.log.debug("Writing AMQP Message; routing_key=%s to %s" % (message.routing_key,adapter.name))
             return adapter.write(message)
             
     # THREADED WORK METHOD
@@ -529,8 +529,8 @@ class MessageProcessingPipeline(Service):
                 
             # Pipeline test mode
 #                if self.test_mode("pipeline_no_output"):
-#                    self.logger.info("test_mode(pipeline_no_output) is set, no output!")
-#                    self.logger.info(processor_output)
+#                    self.log.info("test_mode(pipeline_no_output) is set, no output!")
+#                    self.log.info(processor_output)
 #                    return
 
             if len(self.message_output_adapters) != 1: 
@@ -540,7 +540,7 @@ class MessageProcessingPipeline(Service):
             response = self.write_message_out(message_out) # blocking publish
             if response == "ack":
                 self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
-                self.log_debug("processed and wrote message; requested ack; %s" % message_routing_key)
+                self.log.debug("processed and wrote message; requested ack; %s" % message_routing_key)
                 self.report_event(PipelineEvent.CompletedMessage)
             elif response == "nack":
                 raise Exception("message output adapter NACK")
@@ -562,29 +562,29 @@ class MessageProcessingPipeline(Service):
             return False
             
         except MessageTypeUnsupportedException as e:
-            self.log_warning("Message type unsupported! %s" % e)
+            self.log.warning("Message type unsupported! %s" % e)
             self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
             self.report_event(PipelineEvent.UnsupportedMessage)
-            self.log_info("Message type unsupported; Sending ACK; %s" % message_routing_key)
+            self.log.info("Message type unsupported; Sending ACK; %s" % message_routing_key)
             #self.statistics.metric("messages_processed_unknown_type")
             
         except MessageIgnoredException as e:
-            self.log_info("Message type ignored; Sending ACK; %s" % message_routing_key)
+            self.log.info("Message type ignored; Sending ACK; %s" % message_routing_key)
             self.report_event(PipelineEvent.IgnoredMessage)
             self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
 
         except MessageProcessingFailedException as e:
-            self.log_warning("Message processing failed for msg with routing_key=%s: %s" % (message_routing_key,e.__repr__()))
+            self.log.warning("Message processing failed for msg with routing_key=%s: %s" % (message_routing_key,e.__repr__()))
             self._input_adapters[0].nack_message(message_delivery_tag, message_consumer_tag)
             self.report_event(MessageProcessingFailedException)
             #self.statistics.metric("messages_processed_failed_error")
         
         except Exception as e:
-            self.log_exception()
-            self.log_error("unexpected exception, see above")
+            self.log.exception()
+            self.log.error("unexpected exception, see above")
             self.report_event(MessageProcessingFailedException)
 
-        self.log_debug("leaving _do_message_process_pass()")
+        self.log.debug("leaving _do_message_process_pass()")
 
     # we make these methods so we may better return or raise exceptions as 
     # there are conditions where a critical exception should result cesation
@@ -617,7 +617,7 @@ class MessageProcessingPipeline(Service):
             self.set_failed("Message Adapter Startup Failure: %s" % e)
 
         except Exception as e:
-            self.log_exception()
+            self.log.exception()
             self.set_failed("critical exception in pipeline setup")
 
     # Cleanly shut down the pipeline
@@ -626,13 +626,13 @@ class MessageProcessingPipeline(Service):
     #  loop and prevent Thread clean-up among other undesirables
     def _shutdown_pipeline(self):
  
-        self.logger.debug("Starting orderly shut down of pipeline")
+        self.log.debug("Starting orderly shut down of pipeline")
         
         # Statistics and Monitoring
         try:
             self.stop_message_adapters()
         except Exception as e:
-            self.log_exception(stacklevel=2)
+            self.log.exception(stacklevel=2)
 
     # Component::do_run()
     # Called via super(component).run() which was called by self.thread.start()
@@ -644,9 +644,9 @@ class MessageProcessingPipeline(Service):
         # we could call a child or parent class method work loop here also
         
         if self.keep_working:
-            self.log_info("Pipeline started")
+            self.log.info("Pipeline started")
         else:
-            self.log_warning("Pipeline did not start correctly. Shutting down.")
+            self.log.warning("Pipeline did not start correctly. Shutting down.")
         
         # The work loop
         while self.keep_working:
@@ -654,4 +654,4 @@ class MessageProcessingPipeline(Service):
 
         self._shutdown_pipeline()
 
-        self.logger.info("Pipeline shut down completed")
+        self.log.info("Pipeline shut down completed")

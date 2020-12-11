@@ -30,8 +30,8 @@ class Statistics():
         _parent = kwargs.get("parent", None)
         _instance_start_timestamp = self.now()
         
-        self.logger = logging.getLogger("statisticsengine")
-        self.logger.setLevel("INFO")
+        self.log = logging.getLogger("statisticsengine")
+        self.log.setLevel("INFO")
         
         return # end _init_
     
@@ -41,7 +41,7 @@ class Statistics():
         if field_name not in self._metrics:
             self._metrics[field_name] = 0
         self._metrics[field_name] += value
-        self.logger.debug("metric reported '%s' of '%s'" % (field_name,value))
+        self.log.debug("metric reported '%s' of '%s'" % (field_name,value))
         
         # feed watchdogs which might be waiting for this metric
         # it might be better if we simply record the last time of this metric and go
