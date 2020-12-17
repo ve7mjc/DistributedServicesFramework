@@ -151,11 +151,17 @@ class AmqpProducerMessage(AmqpMessage):
         return self._properties
         
     def set_properties(self,properties=None):
-        if not properties and not self._properties:
-            self._properties = pika.spec.BasicProperties()
-        else:
-            self._properties = properties
         
+        if properties and not isinstance(properties,pika.spec.BasicProperties):
+            self.log.error("AmqpMessage.set_properties() passed %s" % 
+                type(properties))
+            return True
+            
+        if properties:
+            self._properties = properties
+        else:
+            self._properties = pika.spec.BasicProperties()
+
         if self._persistent:
             self._properties.delivery_mode = 2
 
@@ -174,7 +180,6 @@ class AmqpProducerMessage(AmqpMessage):
 
     @classmethod
     def from_kwargs(cls,**kwargs):
-        
         obj = cls(**kwargs)
         obj._persistent = kwargs.get("persistent", True)
         obj.set_exchange(kwargs.get("exchange", None))

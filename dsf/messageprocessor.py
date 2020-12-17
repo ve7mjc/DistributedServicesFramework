@@ -22,7 +22,7 @@ class MessageProcessor(Component):
     _valid = True
     _constructor_called = False
     
-    # reference to MessageProcessingPipeline instance (Parent)
+    # reference to MessagePipeline instance (Parent)
     __message_pipeline_hdl = None
     
     def __init__(self,**kwargs):

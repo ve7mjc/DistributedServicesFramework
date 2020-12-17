@@ -3,6 +3,10 @@ from io import BytesIO # StringIO,
 
 from enum import Enum
 
+from datetime import datetime, timezone
+
+import json
+
 # application/json
 # text/csv
 # text/xml
@@ -10,6 +14,12 @@ from enum import Enum
 
 # Example HTTP Header with Content-Type:
 # Content-Type: text/html; charset=UTF-8\r\n
+
+class JsonEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, datetime):
+            return o.isoformat()
+        return json.JSONEncoder.default(self, o)
 
 class MessageType():
     
@@ -45,18 +55,35 @@ class Message():
     # Base / Original Data
     _source_data = None
     _source_content_type = None
+    
+    # intended to be the datetime of the data created
+    _content_created_time = None
 
     def __init__(self,**kwargs):
-            
+        
         if "data" in kwargs and type(kwargs["data"]) is dict:
             self._data = kwargs["data"]
             self._type = MessageType("dict")
+
+        if "data" in kwargs and type(kwargs["data"]) is list:
+            self._data = kwargs["data"]
+            self._type = MessageType("dict")
+            
+        typecode = kwargs.get("typecode",None)
+        if typecode:
+            self._type = MessageType(typecode,kwargs.get("typename",typecode))
 
         # Container Concept
         if not hasattr(self,"_type"):
             #self.log.warning("declare a message type prior to calling Message.__init__(..)")
             self._type = MessageType()
-            
+    
+    # if no timestamp passed, use this time
+    def set_content_created_time(self,timestamp=None):
+        if timestamp: 
+            self._content_created_time = timestamp
+        else:
+            self._content_created_time = datetime.now(timezone.utc)
 
     # Child Factory Class Method
     # Produce child from XML string
@@ -148,6 +175,10 @@ class Message():
         
     def set_invalid(self,reason=None):
         self._valid = False
+
+    def __str__(self):
+        str_rep = self.data.__str__()
+        return str_rep
         
     @property
     def problems(self):
@@ -167,3 +198,9 @@ class Message():
             self._problems["processing_errors"] = []
         self._problems["processing_errors"].append(message)
         self._valid = False
+        
+        
+    def to_json(self):
+        if self.type_code == "dict":
+            # kludge? convert datetime objects to ISO strings
+            return json.dumps(self.data, cls=JsonEncoder)

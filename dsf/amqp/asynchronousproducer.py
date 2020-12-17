@@ -150,26 +150,20 @@ class AsynchronousProducer(AsynchronousClient):
 
     # write (publish) to the channel 
     # __do_publish which is being called from the ioloop in a callback
-    # amqp_message = <class 'Message'>
-    def __do_basic_publish(self, amsg):
+    def __do_basic_publish(self, amqp_message):
 
         if self.can_publish():
             self._message_number += 1
             self._deliveries.append(self._message_number)
             
             self._channel.basic_publish(
-                amsg.exchange, 
-                amsg.routing_key, 
-                amsg.body, 
-                amsg.properties)
-                
+                amqp_message.exchange, amqp_message.routing_key, 
+                amqp_message.body, amqp_message.properties )
 
-
-    #        self.log.debug("published message to channel: exchange=%s, routing_key=%s, len(body)=%s" % (
-    #                amqp_message.exchange,
-    #                amqp_message.routing_key,
-    #                len(amqp_message.body)
-    #            ))
+            self.log.debug("published message to channel: exchange=%s, "
+                    "routing_key=%s, len(body)=%s" % (amqp_message.exchange,
+                    amqp_message.routing_key,len(amqp_message.body) )
+                )
 
             # return the message number so we can pass back
             # as the delivery_tag           
@@ -234,8 +228,11 @@ class AsynchronousProducer(AsynchronousClient):
 
             # inject exchange if it is not available
             if not message.exchange:
-                if not self._exchange: self.log.warning("exchange not desginated in AMQPMessage")
-                else: message.exchange = self._exchange
+                if not self._exchange: 
+                    self.log.warning("exchange not desginated in AMQPMessage")
+                    return "error"
+                else: 
+                    message.set_exchange(self._exchange)
 
             # place message in outgoing Queue
             # if we are trying to do a blocking mode, there could in fact be messages

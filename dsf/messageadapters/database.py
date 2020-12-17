@@ -1,8 +1,5 @@
-#
-# 
-#
 from dsf.component import Component
-from dsf.messageadapters import MessageOutputAdapter
+from dsf.messageadapters import MessageSink
 from dsf.messaging import Message
 
 import psycopg2
@@ -10,11 +7,12 @@ from queue import Queue,Empty
 
 import threading
 
-class Writer(MessageOutputAdapter):
+class Writer(MessageSink):
     
     _adapter_type = "TimescaleDbWriter"
     _message_direction = "out"
     _config_section = "output.postgresql"
+    
     _message_types = [dict]
     
     message_queue = Queue()
@@ -47,7 +45,7 @@ class Writer(MessageOutputAdapter):
     # Write Message to Adapter
     # MessageProcessor will ensure that the message type
     #  respects that of self._message_types = []
-    def write(self, message):
+    def write_message(self, message):
         sqldict = message.data
         try:
             with self.pg_conn:

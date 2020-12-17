@@ -47,7 +47,7 @@ from dsf.messageprocessor import MessageProcessor
 
 
 # Stay asyncronous - stay frosty
-class MessageProcessingPipeline(Service):
+class MessagePipeline(Service):
 
     # messages from consumers will be placed here to be picked
     # up by data processing workers
@@ -118,7 +118,7 @@ class MessageProcessingPipeline(Service):
     #  class_name - (str) "class_name" or blank if supplied via kwargs or dot
     #   notation in module_name
     # kwargs.class = name of class
-    def _load_class(self,module_name,class_name=None,**kwargs):
+    def _load_class(self,module_name,class_name=None, **kwargs):
     
         if self.is_failed():
             self.log.debug("refusing to load module '%s'"
@@ -153,6 +153,7 @@ class MessageProcessingPipeline(Service):
                 % (class_name,module_name))
     
         except ModuleNotFoundError as e:
+            #self.log.exception()
             self.log.error("%s: %s" % (adapter_type_str, e))
         
         except Exception as e:
@@ -181,6 +182,7 @@ class MessageProcessingPipeline(Service):
                     self.set_failed(e)
             elif isinstance(module_name,MessageProcessor):
                 processor = module_name
+                class_name = module_name.__class__.__name__ # for logging
                 if hasattr(processor,"set_pipeline_hdl"):
                     processor.set_pipeline_hdl = self
             else:
@@ -210,11 +212,19 @@ class MessageProcessingPipeline(Service):
     @property
     def message_processors(self):
         return self._message_processors
+        
+    @property
+    def message_processor(self):
+        if len(self._message_processors) != 1:
+            self.log.error("message_processor called but there are "
+                "%s processor(s)" % len(self._message_processors))
+        return self._message_processors[list(self._message_processors.keys())[0]]
+
     
     ## Message Adapters ##
     
     # adapter_type - can be an instance of a class which inherits 
-    #  MessageInputAdapter or MessageOutputAdapter, or a string containing
+    #  MessageSource or MessageSink, or a string containing
     #  a MessageAdapter known to this class
     # if 'class_name' kwarg is passed, it will load a different
     def add_message_adapter(self,module_name,class_name=None,**kwargs):
@@ -229,14 +239,14 @@ class MessageProcessingPipeline(Service):
         kwargs["pipeline_hdl"] = self
         
         try:
-            if (isinstance(module_name,MessageInputAdapter) or 
-                isinstance(module_name,MessageOutputAdapter)):
+            if (isinstance(module_name,MessageSource) or 
+                isinstance(module_name,MessageSink)):
                 adapter = module_name
                 if hasattr(adapter,"set_pipeline_hdl"):
                     adapter.set_pipeline_hdl(self)
                 adapter_type_str = type(adapter).__name__
-                adapter.set_logger_name("adapter.%s" 
-                    % adapter_type_str.lower())
+#                adapter.set_logger_name("adapter.%s" 
+#                    % adapter_type_str.lower())
             elif isinstance(module_name,str):
                 adapter_type_str = module_name
                 if "logger_name" not in kwargs:
@@ -245,14 +255,14 @@ class MessageProcessingPipeline(Service):
                 if module_name == "amqpconsumer": # AmqpConsumer
                     kwargs["message_queue"] = self._input_message_queue
                     #kwargs["statistics"] = self.statistics
-                    adapter = MessageInputAdapterAmqpConsumer(**kwargs)
+                    adapter = MessageSourceAmqpConsumer(**kwargs)
                 elif module_name == "amqpproducer": # AmqpProducer
                     # attach Statistics and ServiceMonitor hooks?                
                     # kwargs["message_queue"] = self._input_message_queue
                     # kwargs["statistics"] = self.statistics
-                    adapter = MessageOutputAdapterAmqpProducer(**kwargs)
+                    adapter = MessageSinkAmqpProducer(**kwargs)
                 elif module_name == "consolewriter":
-                    adapter = MessageOutputAdapterConsoleWriter(**kwargs)
+                    adapter = MessageSinkConsoleWriter(**kwargs)
                 else:
                     # attempt to load a module and class
                     adapter = self._load_class(module_name,class_name)
@@ -263,11 +273,11 @@ class MessageProcessingPipeline(Service):
                                 % type(adapter).__name__)
 
             # Check the Message Adapter instance
-            if adapter and isinstance(adapter,MessageInputAdapter):
-                adapter.setmessagequeue(self._input_message_queue)
+            if adapter and isinstance(adapter,MessageSource):
+                adapter.set_message_queue(self._input_message_queue)
                 self._input_adapters.append(adapter)
                 adapter_direction = "Input"
-            elif adapter and isinstance(adapter,MessageOutputAdapter):
+            elif adapter and isinstance(adapter,MessageSink):
                 self._output_adapters.append(adapter)
                 adapter_direction = "Output"
             elif adapter is None:
@@ -485,11 +495,11 @@ class MessageProcessingPipeline(Service):
             raise Exception("_do_amqp_publish error: %s" % e)
         return True
 
-    def write_message_out(self,message):
+    def publish_message(self, message):
         for adapter in self._output_adapters:
             if message.type_code == "amqpmessage":
                 self.log.debug("Writing AMQP Message; routing_key=%s to %s" % (message.routing_key,adapter.name))
-            return adapter.write(message)
+            return adapter.write_message(message)
             
     # THREADED WORK METHOD
     # Do a single message in, process, and message out
@@ -497,55 +507,64 @@ class MessageProcessingPipeline(Service):
     # Mind the thread-safety of calls made from this method
     def _do_message_process_pass(self):
         try:
+            
+            # todo, return a tuple or object with deliver information
+            
+            # generic consumer message ack
+            inputmsg_message_id = None
+            inputmsg_consumer_id = None
+            inputmsg_routing_key = None
+            
             # block on thread-safe message queue with a small timeout to ensure
             # the loop rate remains high in case we wanted to do other tasks
-            message = self._input_message_queue.get(block=True, timeout=0.05)
+            message = self._input_message_queue.get(block=False)
+            
             if not isinstance(message, Message):
                 raise MessageProcessingFailedException("input adapter has provided an unexpected data type of %s" % type(message))
-
-            processor_output = None
-            if isinstance(message,Message) and message.type.code == "amqp_c":
- 
-                # Note consumer and delivery tags so we follow up with message
-                # acknowledgements to the source AMQP Consumer
-                message_delivery_tag = message.method.delivery_tag
-                message_consumer_tag = message.method.consumer_tag
-                message_routing_key = message.method.routing_key
-                
-                # Retrieve a MessageProcessor which advertises it can process this Message
-                processor = self.processor_for_routing_key(message_routing_key)
-                if not processor:
-                    raise MessageTypeUnsupportedException("unknown and unsupported message type; message_type=None; routing_key=%s" % input_message_routing_key)
-                message_out = processor.process_message(message)
-                #if not type(outmsg).__name__.lower() == "amqpmessage"
             
+            processor = None
+            processor_output = None
+            
+            if isinstance(message,Message):
+                if message.type.code == "amqp_c":
+                    # Note consumer and delivery tags so we follow up with message
+                    # acknowledgements to the source AMQP Consumer
+                    inputmsg_message_id = message.method.delivery_tag
+                    inputmsg_consumer_id = message.method.consumer_tag
+                    inputmsg_routing_key = message.method.routing_key
+                    
+                    # Retrieve a MessageProcessor which advertises it can process this Message
+                    processor = self.processor_for_routing_key(inputmsg_routing_key)
+                    if not processor:
+                        raise MessageTypeUnsupportedException("unknown and unsupported message type; message_type=None; routing_key=%s" % inputmsg_routing_key)
+                    
+                    #if not type(outmsg).__name__.lower() == "amqpmessage"
+                else:
+                    # Message, not of subtype AmqpConsumerMessage
+                    processor = self.message_processor
+                    
+            if processor:
+                message_out = processor.process_message(message)
+            else:
+                self.log.warning("processor is not available")
+
             if not message_out:
                 raise MessageProcessingFailedException("Processor output is None")
             if not isinstance(message_out,Message):
                 raise MessageProcessingFailedException("Processor output is of type %s and not a child of class Message" % type(message_out).__name__)
 
-                # We communicate our acknowledgement intention through the Exception
-                # eg. MessageProcessorException.ack = {None,True,False}
-                
-            # Pipeline test mode
-#                if self.test_mode("pipeline_no_output"):
-#                    self.log.info("test_mode(pipeline_no_output) is set, no output!")
-#                    self.log.info(processor_output)
-#                    return
-
             if len(self.message_output_adapters) != 1: 
                 print("CONFUSED. we have zero or more than one output adapter!")
 
-            # Write Message to MessageOutputAdapter(s)
-            response = self.write_message_out(message_out) # blocking publish
-            if response == "ack":
-                self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
-                self.log.debug("processed and wrote message; requested ack; %s" % message_routing_key)
+            publish_response = self.publish_message(message_out) # blocking publish
+            if publish_response == "ack":
+                self._input_adapters[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
+                self.log.debug("processed and published message; sent ack.")
                 self.report_event(PipelineEvent.CompletedMessage)
-            elif response == "nack":
+            elif publish_response == "nack":
                 raise Exception("message output adapter NACK")
             else:
-                raise Exception("message output adapter output: %s" % response)
+                raise Exception("message output adapter output: %s" % publish_response)
 
 #            # blocking publish output! new messages will be arriving in the input while we block
 #            if self._do_amqp_publish(output_amqp_message):
@@ -559,23 +578,24 @@ class MessageProcessingPipeline(Service):
 #            self.statistics.metric("messages_processed_type_%s_completely" % input_message_type)
 
         except Empty: # there was no messages for us, back to waiting we go
+            time.sleep(0.05)
             return False
             
         except MessageTypeUnsupportedException as e:
             self.log.warning("Message type unsupported! %s" % e)
-            self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
+            self._input_adapters[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
             self.report_event(PipelineEvent.UnsupportedMessage)
-            self.log.info("Message type unsupported; Sending ACK; %s" % message_routing_key)
+            self.log.info("Message type unsupported; Sending ACK; %s" % inputmsg_routing_key)
             #self.statistics.metric("messages_processed_unknown_type")
             
         except MessageIgnoredException as e:
-            self.log.info("Message type ignored; Sending ACK; %s" % message_routing_key)
+            self.log.info("Message type ignored; Sending ACK; %s" % inputmsg_routing_key)
             self.report_event(PipelineEvent.IgnoredMessage)
-            self._input_adapters[0].ack_message(message_delivery_tag, message_consumer_tag)
+            self._input_adapters[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
 
         except MessageProcessingFailedException as e:
-            self.log.warning("Message processing failed for msg with routing_key=%s: %s" % (message_routing_key,e.__repr__()))
-            self._input_adapters[0].nack_message(message_delivery_tag, message_consumer_tag)
+            self.log.warning("Message processing failed for msg with routing_key=%s: %s" % (inputmsg_routing_key,e.__repr__()))
+            self._input_adapters[0].nack_message(inputmsg_message_id, inputmsg_consumer_id)
             self.report_event(MessageProcessingFailedException)
             #self.statistics.metric("messages_processed_failed_error")
         

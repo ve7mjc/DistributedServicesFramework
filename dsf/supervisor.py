@@ -20,6 +20,8 @@ from copy import copy
 
 import json
 
+from time import sleep
+
 # Status Report
 # Availability
 class StatusReport():
@@ -281,7 +283,7 @@ class Supervisor(Component):
                 self.process_component_events()
                 #self.do_log_queue()
                 self.do_task_scheduling()
-                pass
+                sleep(0.05)
             except Exception as e:
                 print("exception in service loop")
                 self.log.exception()

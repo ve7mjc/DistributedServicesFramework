@@ -68,9 +68,10 @@ class PatternAcceptanceFilter():
     
     def filter(self,record):
         if record.levelname == "ERROR":
+            pass
             # kwargs["print_log_call_line"]
-            print(record.msg)
-            print(record.args.__str__())
+#            print(record.msg)
+#            print(record.args.__str__())
         #record.message
         # default to WARNING if we do not have a filter in place
         if not len(self.filters):

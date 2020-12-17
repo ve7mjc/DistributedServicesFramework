@@ -122,7 +122,7 @@ class Component():
 
     def __init__(self, **kwargs):
         try:
-
+    
             # default name to that of child class type
             #  allow keyword argument specification
             if "name" in kwargs: self._name = kwargs["name"]
@@ -304,6 +304,7 @@ class Component():
     def start(self,**kwargs):
         
         # Pre-start method hook for child
+        # change to callback request?
         if hasattr(self,"pre_start"):
             self.pre_start(**kwargs)
         
@@ -335,15 +336,15 @@ class Component():
     #  before and after the child class run loop
     # Thread safety!
     def _run(self):
-        try:            
+        try:
             self.log.debug("entering _run() via thread")
             if hasattr(self,"run"):
                 try:
                     self.run()
                 except Exception as e:
-                    self.log.critical("error in self.run() method! see next")
+                    self.log.exception(stackback=1)
                     self.set_failed("critical exception in run()")
-                    self.log.exception(stacklevel=1)
+                    
             else:
                 self.log.warning("%s.start() has been called but no run() method has been defined!" % type(self).__name__)
 

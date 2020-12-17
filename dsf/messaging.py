@@ -1,5 +1,5 @@
 
-from dsf.messageprocessingpipeline import MessageProcessingPipeline
+from dsf.messageprocessingpipeline import MessagePipeline
 from dsf.messageadapters import *
 from dsf.messageprocessor import MessageProcessor
 from dsf.message import Message

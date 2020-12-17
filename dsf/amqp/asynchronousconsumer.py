@@ -210,7 +210,7 @@ class AsynchronousConsumer(AsynchronousClient):
             # OPTION 2 - Write to a shared Queue()
             # Reference to a shared message Queue has been passed to the 
             # constructor. This occurs when this consumer is attached to 
-            # a MessageProcessingPipeline
+            # a MessagePipeline
             elif self._received_messages_queue:
                 self._received_messages_queue.put(message)
                 self.log.debug("Wrote Message # %s to Message Queue; routing_key=%s; len(body)=%s" % (method.delivery_tag, method.routing_key, len(body)))
