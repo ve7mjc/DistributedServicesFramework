@@ -8,10 +8,10 @@ from pika.exceptions import ChannelWrongStateError
 import functools # callbacks
 from datetime import datetime
 
-from dsf import utilities, exceptionhandling
-from dsf.amqp.asynchronousclient import AsynchronousClient, ClientType
-from dsf.amqp import amqputilities
+from dsf import exceptionhandling
+from dsf.amqp.amqpclient import AmqpClient, ClientType
 from dsf.amqp.amqpmessage import AmqpConsumerMessage
+from dsf.amqp import amqputilities
 
 # This Asynchronous Consumer will operate in one of two modes:
 # - Shared Queue mode: If a reference to a Queue object is passed in to the 
@@ -24,7 +24,7 @@ from dsf.amqp.amqpmessage import AmqpConsumerMessage
 # Test Modes
 # amqp_nack_requeue_all_messages
 # todo - should we respond to amqp.consumer.* ?
-class AsynchronousConsumer(AsynchronousClient):
+class AmqpConsumer(AmqpClient):
 
     _client_type = ClientType.Consumer
     
@@ -147,10 +147,12 @@ class AsynchronousConsumer(AsynchronousClient):
             self.log.exception()
         
     @property
-    def is_consuming(self): return self._consuming
+    def is_consuming(self): 
+        return self._consuming
 
     @property
-    def consumer_tag(self): return self._consumer_tag
+    def consumer_tag(self): 
+        return self._consumer_tag
 
     # RabbitMQ has acknowledged cancellation of the consumer with a
     # Basic.CancelOk frame

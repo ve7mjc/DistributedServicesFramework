@@ -51,14 +51,14 @@ class MessagePipeline(Service):
 
     # messages from consumers will be placed here to be picked
     # up by data processing workers
-    _input_adapters = []
-    _input_message_queue = Queue()
+    _message_sources = []
+    _message_source_queue = Queue()
     
     # processed and completed messages will be placed here by
     # data processing workers to be picked up by producers for publishing
     # this queue may be bypassed when there is a single processing worker
-    _output_adapters = []
-    _output_message_queue = Queue()
+    _message_sinks = []
+    _message_sink_queue = Queue()
     
     # Registered message types for assigning appropriate processors
     # Instead of message_types, instead for now - we will use a message
@@ -87,7 +87,9 @@ class MessagePipeline(Service):
             self.log.error(("requested processor by name \"%s\""
                 "does not exist or is not loaded!" % processor_name))
             return True
+        
         processor = self._message_processors[processor_name]
+        
         # AMQP Routing Key specific!
         if hasattr(processor,"_routing_keys_accepted"):
             for amqp_acceptance_filter in processor._routing_keys_accepted:
@@ -240,7 +242,7 @@ class MessagePipeline(Service):
         
         try:
             if (isinstance(module_name,MessageSource) or 
-                isinstance(module_name,MessageSink)):
+                    isinstance(module_name,MessageSink)):
                 adapter = module_name
                 if hasattr(adapter,"set_pipeline_hdl"):
                     adapter.set_pipeline_hdl(self)
@@ -253,12 +255,12 @@ class MessagePipeline(Service):
                     kwargs["logger_name"] = ("adapter.%s" 
                         % adapter_type_str.lower())
                 if module_name == "amqpconsumer": # AmqpConsumer
-                    kwargs["message_queue"] = self._input_message_queue
+                    kwargs["message_queue"] = self._message_source_queue
                     #kwargs["statistics"] = self.statistics
                     adapter = MessageSourceAmqpConsumer(**kwargs)
                 elif module_name == "amqpproducer": # AmqpProducer
                     # attach Statistics and ServiceMonitor hooks?                
-                    # kwargs["message_queue"] = self._input_message_queue
+                    # kwargs["message_queue"] = self._message_source_queue
                     # kwargs["statistics"] = self.statistics
                     adapter = MessageSinkAmqpProducer(**kwargs)
                 elif module_name == "consolewriter":
@@ -274,11 +276,11 @@ class MessagePipeline(Service):
 
             # Check the Message Adapter instance
             if adapter and isinstance(adapter,MessageSource):
-                adapter.set_message_queue(self._input_message_queue)
-                self._input_adapters.append(adapter)
+                adapter.set_message_queue(self._message_source_queue)
+                self._message_sources.append(adapter)
                 adapter_direction = "Input"
             elif adapter and isinstance(adapter,MessageSink):
-                self._output_adapters.append(adapter)
+                self._message_sinks.append(adapter)
                 adapter_direction = "Output"
             elif adapter is None:
                 raise Exception("MessageAdapter failed to create")
@@ -300,10 +302,12 @@ class MessagePipeline(Service):
                 % (adapter_type_str,e.__str__()) )
 
     @property
-    def message_output_adapters(self): return self._output_adapters
+    def message_sinks(self): 
+        return self._message_sinks
     
     @property
-    def message_input_adapters(self): return self._input_adapters
+    def message_sources(self): 
+        return self._message_sources
 
     # Start Message Input and Output Adapters
     # Call MessageAdapter.start() method on each
@@ -314,10 +318,10 @@ class MessagePipeline(Service):
     #   watches MessageAdapter.is_ready() and MessageAdapter.is_failed()
     # timeoutsecs - number of seconds we will wait until all of the started
     #   adapters are ready. Default 3.
-    def start_message_input_adapters(self,blocking=True,timeoutsecs=3):
+    def start_message_sources(self,blocking=True,timeoutsecs=3):
         self.start_message_adapters("input",blocking,timeoutsecs)
         
-    def start_message_output_adapters(self,blocking=True,timeoutsecs=3):
+    def start_message_sinks(self,blocking=True,timeoutsecs=3):
         self.start_message_adapters("output",blocking,timeoutsecs)
         
     def start_message_adapters(self,adapters_type="all",blocking=False,timeoutsecs=3):
@@ -328,11 +332,11 @@ class MessagePipeline(Service):
         
         adapters = None
         
-        if adapters_type=="output" or adapters_type=="all":
-            adapters = self._output_adapters
+        if adapters_type=="sink" or adapters_type=="all":
+            adapters = self._message_sinks
             
-        if adapters_type=="input" or adapters_type=="all":
-            adapters = self._input_adapters
+        if adapters_type=="source" or adapters_type=="all":
+            adapters = self._message_sources
         
         if not len(adapters):
             self.log.warning("start_message_adapters(%s) called but "
@@ -345,7 +349,8 @@ class MessagePipeline(Service):
         started_time = utilities.utc_timestamp()
         
         # leave now unless we intend on blocking
-        if not blocking: return len(adapters)
+        if not blocking: 
+            return len(adapters)
         
         total_adapters_ready = 0
         adapters_ready = 0
@@ -372,17 +377,18 @@ class MessagePipeline(Service):
     #  which provides stop() and @property.stopped
     def stop_message_adapters(self):
         blocking = True       
-        self.log.debug(("Requesting %s Message Input Adapters(s) and "
-            "%s Message Output Adapters(s) stop" 
-                % (len(self._input_adapters), len(self._output_adapters))))
+        self.log.debug(("Requesting %s Message Source(s) and "
+            "%s Message Sink(s) stop" 
+                % (len(self._message_sources), len(self._message_sinks))))
         
-        adapters = self._input_adapters + self._output_adapters
+        adapters = self._message_sources + self._message_sinks
         for adapter in adapters:
             if hasattr(adapter,"stop"): adapter.stop()
             else: self.log.warning(("uh-oh! adapter %s does not have a "
                 "stop() method!" % type(adapter).__name__))
         
-        if not blocking: return len(adapters)
+        if not blocking: 
+            return len(adapters)
         
         started_timestamp = utilities.utc_timestamp()
         while (utilities.utc_timestamp()-started_timestamp) < 3:
@@ -496,7 +502,7 @@ class MessagePipeline(Service):
         return True
 
     def publish_message(self, message):
-        for adapter in self._output_adapters:
+        for adapter in self._message_sinks:
             if message.type_code == "amqpmessage":
                 self.log.debug("Writing AMQP Message; routing_key=%s to %s" % (message.routing_key,adapter.name))
             return adapter.write_message(message)
@@ -517,7 +523,7 @@ class MessagePipeline(Service):
             
             # block on thread-safe message queue with a small timeout to ensure
             # the loop rate remains high in case we wanted to do other tasks
-            message = self._input_message_queue.get(block=False)
+            message = self._message_source_queue.get(block=False)
             
             if not isinstance(message, Message):
                 raise MessageProcessingFailedException("input adapter has provided an unexpected data type of %s" % type(message))
@@ -553,12 +559,12 @@ class MessagePipeline(Service):
             if not isinstance(message_out,Message):
                 raise MessageProcessingFailedException("Processor output is of type %s and not a child of class Message" % type(message_out).__name__)
 
-            if len(self.message_output_adapters) != 1: 
+            if len(self.message_sinks) != 1: 
                 print("CONFUSED. we have zero or more than one output adapter!")
 
             publish_response = self.publish_message(message_out) # blocking publish
             if publish_response == "ack":
-                self._input_adapters[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
+                self._message_sources[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
                 self.log.debug("processed and published message; sent ack.")
                 self.report_event(PipelineEvent.CompletedMessage)
             elif publish_response == "nack":
@@ -583,7 +589,7 @@ class MessagePipeline(Service):
             
         except MessageTypeUnsupportedException as e:
             self.log.warning("Message type unsupported! %s" % e)
-            self._input_adapters[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
+            self._message_sources[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
             self.report_event(PipelineEvent.UnsupportedMessage)
             self.log.info("Message type unsupported; Sending ACK; %s" % inputmsg_routing_key)
             #self.statistics.metric("messages_processed_unknown_type")
@@ -591,11 +597,11 @@ class MessagePipeline(Service):
         except MessageIgnoredException as e:
             self.log.info("Message type ignored; Sending ACK; %s" % inputmsg_routing_key)
             self.report_event(PipelineEvent.IgnoredMessage)
-            self._input_adapters[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
+            self._message_sources[0].ack_message(inputmsg_message_id, inputmsg_consumer_id)
 
         except MessageProcessingFailedException as e:
             self.log.warning("Message processing failed for msg with routing_key=%s: %s" % (inputmsg_routing_key,e.__repr__()))
-            self._input_adapters[0].nack_message(inputmsg_message_id, inputmsg_consumer_id)
+            self._message_sources[0].nack_message(inputmsg_message_id, inputmsg_consumer_id)
             self.report_event(MessageProcessingFailedException)
             #self.statistics.metric("messages_processed_failed_error")
         
@@ -626,9 +632,9 @@ class MessagePipeline(Service):
             # Start Message Adapters
             # Calls will return the number of adapters now ready or raise an 
             # exception on detection of a single adapter failure or timeout
-            self.start_message_output_adapters(blocking=True)
+            self.start_message_sinks(blocking=True)
             
-            self.start_message_input_adapters(blocking=True)
+            self.start_message_sources(blocking=True)
 
         except MessageAdapterStartupTimeout as e:
             self.set_failed("Message Adapter Startup Timeout: %s" % e)

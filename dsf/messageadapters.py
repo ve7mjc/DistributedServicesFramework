@@ -1,12 +1,11 @@
-from dsf.amqp import AsynchronousConsumer, AsynchronousProducer, amqputilities
-from dsf.amqp import AmqpConsumerMessage, AmqpProducerMessage
-
-from dsf.message import Message
-
 import dsf.domain
+
 from dsf.component import Component
+
 from dsf import exceptionhandling
 from dsf.event import *
+
+from .message import Message
 
 import threading
 import logging
@@ -32,7 +31,6 @@ from time import sleep
 # @properties
 # adapter_type - return descriptive short name, eg: AmqpConsumer
 # direction - "in" or "out"
-
 
 # abstract class
 class MessageAdapter(Component): # Component
@@ -160,7 +158,7 @@ class MessageSource(MessageAdapter):
         pass
 
 # Double check MRO concept here!
-class MessageSourceAmqpConsumer(AsynchronousConsumer,MessageSource):
+class MessageSourceAmqpConsumer(AmqpConsumer,MessageSource):
     
     _adapter_type = "AMQPConsumer"
     _message_types = ["AmqpConsumerMessage"]
@@ -435,7 +433,7 @@ class MessageSink(MessageAdapter):
         raise Exception(
             "write not implemented in MessageSink child class!")
 
-class MessageSinkAmqpProducer(AsynchronousProducer,MessageSink):
+class MessageSinkAmqpProducer(AmqpProducer,MessageSink):
     
     _adapter_type = "AmqpProducer"
     

@@ -9,14 +9,14 @@ import functools # callbacks
 from queue import Queue
 from pika import BasicProperties
 
-from dsf.amqp import AsynchronousClient, ClientType
+from dsf.amqp import AmqpClient, ClientType
 from dsf.amqp.amqpmessage import AmqpProducerMessage
 
 # Important Note on Thread Safety
 # self._connection.ioloop.start() runs in Thread::run()
 # this ioloop is blocking and as all interaction with this ioloop must be
 # done thread-safe by registering a thread-safe callback with the ioloop itself
-class AsynchronousProducer(AsynchronousClient):
+class AmqpProducer(AmqpClient):
   
     _client_type = ClientType.Producer
   

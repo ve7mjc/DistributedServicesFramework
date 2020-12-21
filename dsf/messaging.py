@@ -1,6 +1,10 @@
+from .messagepipeline import MessagePipeline
+from .messageprocessor import MessageProcessor
 
-from dsf.messageprocessingpipeline import MessagePipeline
-from dsf.messageadapters import *
-from dsf.messageprocessor import MessageProcessor
-from dsf.message import Message
-from dsf import utilities
+#from .messageadapters import *
+
+from .adapters import AmqpConsumer, AmqpProducer, amqputilities
+from .adapters import AmqpConsumerMessage, AmqpProducerMessage
+
+from .message import Message
+#from . import utilities

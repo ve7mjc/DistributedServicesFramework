@@ -5,7 +5,7 @@
 import dsf.domain
 from dsf.component import Component
 
-import pika # AMQP Client
+import pika # AMQP Library
 
 import functools
 from queue import Queue
@@ -17,8 +17,6 @@ import json # queue bindings cache
 # SSL is required to manipulate SSLContext of 
 # TLS connection
 from ssl import SSLContext 
-
-from pprint import pprint
 
 # Regarding blocking:
 # self._connection.ioloop.start() runs in Thread::run()
@@ -46,7 +44,7 @@ class ClientType(Enum):
 # Configure Exchange-Queue Bindings [optional] with callback
 # Unbind unused Exchange-Queue Bindings [optional] with callback
 # Notify sub-classes (Producer or Consumer) client is ready via ::client_ready()
-class AsynchronousClient(Component):
+class AmqpClient(Component):
 
     # declare me in a Producer, Consumer, class etc
     _client_type = ClientType.Unspecified
@@ -126,7 +124,7 @@ class AsynchronousClient(Component):
     # steps and a Producer or Consumer can now begin their specific steps.
     # Override me in a child class!
     def client_ready(self):
-        self.log.warning("AsynchronousClient.client_ready() called - needs to be overridden!")
+        self.log.warning("AmqpClient.client_ready() called - needs to be overridden!")
 
     # Add a routing_key pattern
     # Exchanges and Queues must be declared in order for this to be useful
@@ -517,7 +515,7 @@ class AsynchronousClient(Component):
     # this will result in the thread exiting once the ioloop has completed
     def stop(self,reason=None):
         
-        self.log.debug("asynchronousclient.stop() called")
+        self.log.debug("AmqpClient.stop() called")
         super().stop(reason)
         
         # No methods in this class, nor other threads are safe to interact 
