@@ -9,9 +9,9 @@ import functools # callbacks
 from datetime import datetime
 
 from dsf import exceptionhandling
-from dsf.amqp.amqpclient import AmqpClient, ClientType
-from dsf.amqp.amqpmessage import AmqpConsumerMessage
-from dsf.amqp import amqputilities
+from dsf.adapters.amqpclient import AmqpClient, ClientType
+from dsf.adapters.amqpmessage import AmqpConsumerMessage
+from dsf.adapters import amqputilities
 
 # This Asynchronous Consumer will operate in one of two modes:
 # - Shared Queue mode: If a reference to a Queue object is passed in to the 

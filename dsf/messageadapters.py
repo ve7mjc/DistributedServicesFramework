@@ -5,6 +5,9 @@ from dsf.component import Component
 from dsf import exceptionhandling
 from dsf.event import *
 
+from dsf.adapters.amqpconsumer import AmqpConsumer
+from dsf.adapters.amqpproducer import AmqpProducer
+
 from .message import Message
 
 import threading

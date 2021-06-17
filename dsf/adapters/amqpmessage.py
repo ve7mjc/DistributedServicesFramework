@@ -1,4 +1,4 @@
-from dsf.amqp import amqputilities
+from dsf.adapters import amqputilities
 from dsf.message import Message, MessageType
 
 import pika.spec

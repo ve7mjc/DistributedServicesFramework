@@ -9,8 +9,8 @@ import functools # callbacks
 from queue import Queue
 from pika import BasicProperties
 
-from dsf.amqp import AmqpClient, ClientType
-from dsf.amqp.amqpmessage import AmqpProducerMessage
+from dsf.adapters.amqpclient import AmqpClient, ClientType
+from dsf.adapters.amqpmessage import AmqpProducerMessage
 
 # Important Note on Thread Safety
 # self._connection.ioloop.start() runs in Thread::run()

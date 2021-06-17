@@ -13,7 +13,8 @@ from dsf.event import *
 from dsf.exceptions import *
 from dsf.watchdog import Watchdog
 from dsf.component import Component
-from dsf.amqp import AsynchronousProducer, AsynchronousConsumer
+from dsf.adapters.amqpproducer import AmqpProducer
+from dsf.adapters.amqpconsumer import AmqpConsumer
 
 from queue import Empty,Queue
 from copy import copy
@@ -76,12 +77,12 @@ class Supervisor(Component):
             p_kwargs = copy(kwargs)
             p_kwargs["logger_name"] = "supervisor.amqp_producer"
             p_kwargs["exchange"] = kwargs.get("supervisor.exchange")
-            self._amqp_producer = AsynchronousProducer(**p_kwargs)
+            self._amqp_producer = AmqpProducer(**p_kwargs)
             
             c_kwargs = copy(kwargs)
             c_kwargs["logger_name"] = "supervisor.amqp_consumer"
             c_kwargs["queue"] = kwargs.get("supervisor.queue")
-            self._amqp_consumer = AsynchronousConsumer(**c_kwargs)
+            self._amqp_consumer = AmqpConsumer(**c_kwargs)
             
             self.register_periodic_task(self.check_watchdogs,0.5)
             # self.register_periodic_task(self.task_one,2,name="task_one")
@@ -95,10 +96,12 @@ class Supervisor(Component):
             self.log.exception()
         
     @property
-    def amqp_producer(self): return self._amqp_producer
+    def amqp_producer(self): 
+        return self._amqp_producer
         
     @property
-    def amqp_consumer(self): return self._amqp_consumer
+    def amqp_consumer(self): 
+        return self._amqp_consumer
     
     # register a service with this supervisor?
     def register_service(self,service_obj):
