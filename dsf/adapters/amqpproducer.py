@@ -4,6 +4,8 @@
 
 import dsf.domain
 
+from os import environ
+
 from threading import Lock
 import functools # callbacks
 from queue import Queue
@@ -40,6 +42,8 @@ class AmqpProducer(AmqpClient):
         self.config_init(**kwargs)
         self._exchange = self.config.get("exchange")
         self._amqp_url = self.config.get("url")
+        if not self._amqp_url:
+            self._amqp_url = environ.get("AMQP_PRODUCER_URL")
 
         # NOT IMPLEMENTED!
         # if we are using this AMQP Producer via a logging handler
@@ -54,6 +58,7 @@ class AmqpProducer(AmqpClient):
         self._application_name = kwargs.get("application_name", None)
         
         super().__init__(**kwargs)
+
 
     # AMQPClient is now ready
     # Connection and Channel are established

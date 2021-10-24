@@ -5,6 +5,8 @@
 import dsf.domain
 from dsf.component import Component
 
+from os import environ
+
 import pika # AMQP Library
 
 import functools
@@ -80,7 +82,9 @@ class AmqpClient(Component):
 
     def __init__(self, **kwargs):
 
-        self.config_init(**kwargs)
+        super().__init__(**kwargs)
+
+        #self.config_init(**kwargs)
 
         # disable pika logging for now
         pika_logger = logging.getLogger("pika").setLevel(logging.CRITICAL) # logging.CRITICAL
@@ -89,12 +93,17 @@ class AmqpClient(Component):
         loglevel = kwargs.get("loglevel", logging.DEBUG)
         loglevel = kwargs.get("level", loglevel) # alternate key name
         
-        self._amqp_url = self.config.get("url",None)
+        # moved this into child class
+        # self._amqp_url = self.config.get("url", None)
+
         self._host = self.config.get("host", None)
         self._amqp_application_name = self.config.get("amqp_app_name", None)
         self._name = self.config.get("name", None)
         self._connection_parameters = self.config.get("connection_parameters",None)
-        
+
+        self._username = self.config.get("username", None)
+        self._password = self.config.get("username", None)
+
 #        statistics = kwargs.get("statistics", None)
 #        self._amqp_url = kwargs.get("url", self._amqp_url)
 #        self._host = kwargs.get("host", None)
@@ -118,7 +127,6 @@ class AmqpClient(Component):
         # dynamic creation of queue bindings cache file
         self._bindings_cache_filename = "%s-bindings.cache" % self._name.lower()
 
-        super().__init__(**kwargs)
 
     # Method called when this AMQP client has completed its connection
     # steps and a Producer or Consumer can now begin their specific steps.
@@ -156,7 +164,9 @@ class AmqpClient(Component):
             parameters = pika.ConnectionParameters("localhost", 5672, '/')
         
         # todo - add connection parameters to this log entry
-        self.log.debug("Connecting to AMQP Broker")
+        self.log.debug("AMQP Connecting to %s" % parameters)
+
+        self.log.debug("AMQP client using URL %s" % self._amqp_url)
 
         return pika.SelectConnection(parameters=parameters,
                     on_open_callback=self.on_connection_open,
@@ -169,7 +179,7 @@ class AmqpClient(Component):
     # Open a RabbitMQ channel by sending a Channel.Open RPC Command with 
     # an on_open callback
     def on_connection_open(self, _unused_connection):
-        self.log.debug('connection open')
+        self.log.info('AMQP connected to %s' % self._amqp_url)
         self._connection.channel(on_open_callback=self.on_channel_open)
 
     # Callback method called by pika if the connection to RabbitMQ 
@@ -181,7 +191,7 @@ class AmqpClient(Component):
         # general AMQPConnectionError exception which may have other classes wrapped
         if isinstance(error, pika.exceptions.AMQPConnectionError):
             if len(error.args) > 1:
-                self.log.debug("heads up! pika.exceptions.AMQPConnectionError.args == %s" % len(error.args))
+                self.log.info("heads up! pika.exceptions.AMQPConnectionError.args == %s" % len(error.args))
             else:
                 error = error.args[-1] # pass on AMQPConnectionWorkflowFailed exception
         
@@ -195,12 +205,12 @@ class AmqpClient(Component):
                 
                 # TCP Timeout
                 if isinstance(error.exception,socket.timeout):
-                    self.log.error("TCP connection attempt timed out!")
+                    self.log.error("AMQP connection timed out!")
 
             # Exception raised for address-related errors by getaddrinfo() and getnameinfo()
             #   eg. gaierror(-3, 'Temporary failure in name resolution')
             if (isinstance(error, socket.gaierror)):
-                self.log.error('Connection failure: %s' % (error.strerror))
+                self.log.error('AMQP connection failure: %s' % (error.strerror))
             
         else:
             self.log.error('Connection open failed: %s', type(error))
@@ -223,7 +233,7 @@ class AmqpClient(Component):
     def on_connection_closed(self, connection, reason):
         # this connection closing was unexpected - stop() was not called
         if self.keep_working:
-            self.log.warning('Connection closed: %s', reason)
+            self.log.warning('AMQP connection closed: %s', reason)
         # the ioloop stays in play despite losing the connection so we need to force
         # it to exit so we can move on with code execution in self::run()
         self._connection.ioloop.stop()
@@ -252,7 +262,7 @@ class AmqpClient(Component):
     # Passes the closed pika.channel.Channel and Exception reason
     def on_channel_closed(self, channel, reason):
         if self.keep_working:
-            self.log.warning('Channel was closed unexpectedly: %s' % reason)
+            self.log.warning('AMQP channel was closed unexpectedly: %s' % reason)
         
         # a consumer 
         if self._connection.is_open and not self._connection.is_closing: 
@@ -261,7 +271,7 @@ class AmqpClient(Component):
     # Cleanly close RabbitMQ channel
     # Send Channel.Close RPC command. Callback is already registered.
     def close_channel(self):
-        self.log.debug('Closing the channel')
+        self.log.debug('AMQP closing the channel')
         if self._channel.is_open and not self._channel.is_closing: 
             self._channel.close()
 

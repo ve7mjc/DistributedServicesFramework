@@ -72,6 +72,7 @@ class Component():
     #  eg. disk-based ini, etc
     # defaults to self.__class__.__name__ in Component.config_init()
     _config_section = None
+    _config_section_prefix = "" # to be used by derivitive classes
     _config = None
     
     # the presence of a key indicates it is enabled and a value
@@ -143,19 +144,19 @@ class Component():
                     name="%s-thread" % self.name)
             
             self._logger_name = kwargs.get("logger_name",
-                self.get("_logger_name",self.name.lower()))
+                self.get("_logger_name",self.name))
             self._logger = dsf.domain.logging.get_logger(self._logger_name)
             self._logger.set_level(kwargs.get("loglevel","debug"))
             
             # ** Avoid calls which may result in emitting events or produce 
             #    logging output above this! **
             
-            if self._name != self.__class__.__name__: 
-                self.log.debug("initializing %s <class '%s'>" 
-                    % (self._name,self.__class__.__name__))
-            else:
-                self.log.debug("initializing <class '%s'>" 
-                    % self.__class__.__name__)
+            # if self._name != self.__class__.__name__: 
+            #     self.log.debug("initializing %s <class '%s'>" 
+            #         % (self._name,self.__class__.__name__))
+            # else:
+            #     self.log.debug("initializing <class '%s'>" 
+            #         % self.__class__.__name__)
 
             dsf.domain.register_component(self)
             
@@ -190,7 +191,7 @@ class Component():
     def config_init(self,**kwargs):
         if not self._config_section:
             self._config_section = self.__class__.__name__
-        self._config = Config(self._config_section,**kwargs)
+        self._config = Config(self._config_section_prefix+self._config_section,**kwargs)
 
     @property
     def config(self): 
@@ -492,18 +493,16 @@ class Config():
     shared_section = None
  
     def __init__(self,config_section,**kwargs):
-
-        self.shared = dsf.domain.config
-        self.shared_section = config_section
-
+        self.global_config = dsf.domain.config
         self.add_kwargs(kwargs)
-        self.add_shared()
+        self.add_shared(config_section)
         
-    def add_shared(self):
-        if not self.shared.has_section(self.shared_section):
+    def add_shared(self,config_section):
+        #print("retrieving config for %s" % config_section)
+        if not self.global_config.has_section(config_section):
             return True
 
-        section_items = self.shared.get(self.shared_section)
+        section_items = self.global_config.get(config_section)
         if section_items:
             for key in section_items:
                 self.data[key] = section_items[key]

@@ -31,23 +31,31 @@ class Service(Component):
     def __init__(self,**kwargs):
         try:
             # Initialize and Configure Supervisor
-            kwargs["blocking_secs"]=5
+            kwargs["blocking_secs"] = 5
             dsf.domain.init_supervisor(**kwargs)
             
             super().__init__(**kwargs)
             
-            # Set handler for SIGINT
+            # Set handler for SIGINT (CTRL-C)
             signal.signal(signal.SIGINT, self.signal_handler)
+
+            # Set handler for SIGTERM (Docker graceful stop)
+            signal.signal(signal.SIGTERM, self.signal_handler)
+
+            # Docker note: do not expect any further console output from a 
+            # docker container being stopped via 'docker-compose down'
             
             # Process keyword arguments from class initializer
             dsf.domain.config.set_required(self.get("_config_required",False))
-            dsf.domain.config.load()
+
+            loaded_config = dsf.domain.config.load(
+                logger=dsf.domain.logging.get_logger("Configuration"))
             
             dsf.domain.register_service(self)
 
         except Exception as e:
             self.log.exception()
-            self.stop("fault in Service.__init__()") # call for exit, must stop constructor(s)
+            self.stop("Fault in Service.__init__()") # call for exit, must stop constructor(s)
             exit()
         
     # Signal handler
@@ -56,8 +64,11 @@ class Service(Component):
         if hasattr(signal,"strsignal"): # python >= 3.8
             strsig = signal.strsignal(signum)
         else:
-            sig_names = {23:"NSIG", 22:"SIGABRT", 21:"SIGBREAK", 8:"SIGFPE", 4:"SIGILL",
-                2:"SIGINT", 11:"SIGSEGV", 15:"SIGTERM", 0:"SIG_DFL", 1:"SIG_IGN"}
+            sig_names = {
+                    23:"NSIG", 22:"SIGABRT", 21:"SIGBREAK", 8:"SIGFPE", 
+                    4:"SIGILL", 2:"SIGINT", 11:"SIGSEGV", 15:"SIGTERM", 
+                    0:"SIG_DFL", 1:"SIG_IGN"
+                }
             strsig = sig_names[signum]
         
         # throw some hints when catching second SIGINT
@@ -66,7 +77,7 @@ class Service(Component):
         
         self._signal_caught = True
         self.stop("Caught %s" % strsig)
-        self.log.info("Caught SIGINT. Starting orderly shutdown")
+        self.log.info("Caught %s. Starting orderly shutdown" % strsig)
 
     # gracefully shut down and close resources prior to releasing our threaded
     #  worker on stop

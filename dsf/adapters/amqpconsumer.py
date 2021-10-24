@@ -3,6 +3,8 @@
 
 import dsf.domain
 
+from os import environ
+
 from pika.exceptions import ChannelWrongStateError
 
 import functools # callbacks
@@ -64,6 +66,10 @@ class AmqpConsumer(AmqpClient):
 
         self.config_init(**kwargs)
         self._queue = self.config.get("queue")
+
+        self._amqp_url = self.config.get("url")
+        if not self._amqp_url: 
+            self._amqp_url = environ.get("AMQP_CONSUMER_URL")
         
         self._received_messages_queue = kwargs.get("message_queue", None)
         self._strip_routing_key_prefix = kwargs.get("strip_key_prefix", None)
@@ -264,13 +270,13 @@ class AmqpConsumer(AmqpClient):
     
     # Send NACK for Message - Thread-Safe IOLoop Callback
     # channel.basic_nack(delivery_tag=None, multiple=False, requeue=True)
-    # delivery-tag (integer) – int/long The server-assigned delivery tag
-    # multiple (bool) – If set to True, the delivery tag is treated as “up 
-    #   to and including”, so that multiple messages can be acknowledged with
+    # delivery-tag (integer) - int/long The server-assigned delivery tag
+    # multiple (bool) - If set to True, the delivery tag is treated as "up 
+    #   to and including", so that multiple messages can be acknowledged with
     #   a single method. If set to False, the delivery tag refers to a sinegle 
     #   message. If the multiple field is 1, and the delivery tag is zero, 
     #   this indicates acknowledgement of all outstanding messages.
-    # requeue (bool) – If requeue is true, the server will attempt to requeue 
+    # requeue (bool) - If requeue is true, the server will attempt to requeue 
     #   the message. If requeue is false or the requeue attempt fails the 
     #   messages are discarded or dead-lettered.
     def nack_message(self, delivery_tag, consumer_tag=None, multiple=False, requeue=False):

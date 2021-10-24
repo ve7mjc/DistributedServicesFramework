@@ -1,6 +1,9 @@
 # Service Monitor
 # integrated watchdog functionality?
 
+# NOTE: supervisor is currently defaulting to DISABLED
+# self._enabled = False
+
 import dsf.domain
 
 import time
@@ -60,13 +63,15 @@ class Supervisor(Component):
     _registered_components = []
     service = None
     
-    _logger_name = "supervisor"
+    _logger_name = "Supervisor"
     
     _heartbeats = {}
     _last_report_publish_time = 0
     _minimum_check_in_time_secs = 30
     
     publish_queue = Queue()
+
+    _enabled = False
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -74,27 +79,36 @@ class Supervisor(Component):
             # Proceed with Caution - ensure that events do not result in events
             #  aka no recursion bombs
             
-            p_kwargs = copy(kwargs)
-            p_kwargs["logger_name"] = "supervisor.amqp_producer"
-            p_kwargs["exchange"] = kwargs.get("supervisor.exchange")
-            self._amqp_producer = AmqpProducer(**p_kwargs)
-            
-            c_kwargs = copy(kwargs)
-            c_kwargs["logger_name"] = "supervisor.amqp_consumer"
-            c_kwargs["queue"] = kwargs.get("supervisor.queue")
-            self._amqp_consumer = AmqpConsumer(**c_kwargs)
-            
-            self.register_periodic_task(self.check_watchdogs,0.5)
-            # self.register_periodic_task(self.task_one,2,name="task_one")
-            self.register_periodic_task(self.task_statistics_to_log,10)
-            self.register_periodic_task(self.periodic_service_status_report,5)
+            if self._enabled:
+
+                p_kwargs = copy(kwargs)
+                p_kwargs["logger_name"] = "supervisor.amqp_producer"
+                p_kwargs["exchange"] = kwargs.get("supervisor.exchange")
+                self._amqp_producer = AmqpProducer(**p_kwargs)
+                
+                c_kwargs = copy(kwargs)
+                c_kwargs["logger_name"] = "supervisor.amqp_consumer"
+                c_kwargs["queue"] = kwargs.get("supervisor.queue")
+                self._amqp_consumer = AmqpConsumer(**c_kwargs)
+                
+                self.register_periodic_task(self.check_watchdogs,0.5)
+                # self.register_periodic_task(self.task_one,2,name="task_one")
+                self.register_periodic_task(self.task_statistics_to_log,10)
+                self.register_periodic_task(self.periodic_service_status_report,5)
             
             # transitioning to gelf/udp
             #self.log_queue = dsf.domain.logging.queue
+
+            else:
+                self.log.info("Supervisor is DISABLED")
             
         except Exception as e:
             self.log.exception()
-        
+
+    @property
+    def isEnabled(self):
+        return self._enabled
+    
     @property
     def amqp_producer(self): 
         return self._amqp_producer
@@ -106,7 +120,7 @@ class Supervisor(Component):
     # register a service with this supervisor?
     def register_service(self,service_obj):
         self.service = service_obj
-        self.log.debug("Registered Service %s" % service_obj.name)
+        # self.log.debug("Registered Service %s" % service_obj.name)
 
     # add a watchdog that looks for a statistics call on a particular
     # field and times out when time is reached without activity

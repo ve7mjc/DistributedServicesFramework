@@ -9,9 +9,9 @@ from dsf import utilities
 
 # Temporary Global Configuration
 # - Move to service instance
-logging_gelf_udp_host = "44.135.208.228"
+logging_gelf_udp_host = "graylog.bcwarn.net"
 logging_gelf_udp_port = 12201
-supervisor_amqp_host = "localhost"
+supervisor_amqp_host = "amqp.data.bcwarn.net"
 supervisor_amqp_exchange = "services"
 supervisor_amqp_queue = "monitor_rx_dev"
 
@@ -38,7 +38,7 @@ lib_dirnamestr = str(lib_path.parent)
 sys.path.append(lib_dirnamestr)
 
 """
-Logging 
+Logging
 """
 
 import logging as pylogging
@@ -567,7 +567,8 @@ def register_service(serviceobj):
     global service, _services
     service = serviceobj
     _services.append(serviceobj)
-    supervisor.register_service(serviceobj)
+    if supervisor:
+        supervisor.register_service(serviceobj)
     
 def services():
     return _services
@@ -583,16 +584,24 @@ class Config():
     data = {}
     configparser = None
     loaded = False
+    log = None
+
+    def set_logger(self,logger):
+        self.log = logger
     
     def get(self,section,key=None):
+        self.log.debug("Searching Config for section '%s' with key '%s'" % (section,key))
         if self.has_section(section):
             if key:
                 if key in self.data[section]:
+                    self.log.debug("Config returning %s" % self.data[section][key])
                     return self.data[section][key]
                 else: 
                     return None
             else:
+                self.log.debug("Config returning %s" % self.data[section])
                 return self.data[section]
+
         return None
 
     def set(self,section,key,value):
@@ -608,7 +617,11 @@ class Config():
             return True
         return False
 
-    def load(self,filename=None,required=None):
+    # return:
+    def load(self,filename=None,required=None,logger=None):
+
+        if logger:
+            self.set_logger(logger)
 
         from os import path
 
@@ -619,30 +632,40 @@ class Config():
         # We do not have a logger at this point so we will need to create one
         #  if we are going to raise Exception and terminate
         
-        # Auto Config File Search
+        # Config File Search
         # configuration file ({app_name}.cfg or config.ini)
         # search for a number of possible config filenames
         # TODO: add support for cli argument config file
-        auto_filenames = [
-            "config.ini",
-            "config.cfg",
-            "%s.cfg" % app_basenamenosuff.lower(),
-            "%s.config" % app_basenamenosuff.lower(),
-        ]
+        search_folders = [
+                Path.cwd(),
+                "./etc",
+            ]
+        search_names = [
+                "config.ini",
+                "config.cfg",
+                "%s.cfg" % app_basenamenosuff.lower(),
+                "%s.config" % app_basenamenosuff.lower(),
+            ]
 
         if not filename:
-            for item in auto_filenames:
-                if path.exists(item):
-                    filename = item
-                    break
+            for folder in search_folders:
+                for name in search_names:
+                    test_path = "%s/%s" % (folder,name)
+                    if path.exists(test_path):
+                        filename = test_path
+                        break
         
         try:
-            if filename:
+            if not filename:
+                return None
+
+            else:
                 self.configparser = configparser.ConfigParser(allow_no_value=True)
-                # This optionxform method transforms option names on every read, 
-                #  get, or set operation. The default converts the name to lowercase. 
-                #  This also means that when a configuration file gets written, 
-                #  all keys will be lowercase.
+                # The optionxform method transforms option names on every read, 
+                # get, or set operation. The default converts the name to 
+                # lowercase.
+                # This also means that when a configuration file gets written, 
+                # all keys will be lowercase.
                 # Redeclare this method to prevent this transformation
                 # INI format requires that config files must have section headers
                 self.configparser.optionxform = lambda option: option
@@ -650,18 +673,22 @@ class Config():
 
                 # dict object of sections
                 self.data = self.configparser._sections
-                
+
                 self.loaded = True
                 
             # Raise an Exception if we required a config but was not able to
             #  locate or load it
             if required and not self.loaded:
                 raise Exception("required but not found")
-                
-            return self.data
+            
+            self.log.info("Loaded configuration from %s" % filename)
+
+            # return the config filename upon success
+            return filename
         
         except Exception as e:
-            raise Exception("unable to load config file %s: %s" % (filename,e.__str__()))
+            raise Exception("Unable to0 load config file %s: %s" % (filename,e.__str__()))
+
 
     def set_required(self,value=True):
         self.required = value
@@ -716,10 +743,11 @@ def init_supervisor(**kwargs):
         kwargs["supervisor.queue"] = supervisor_amqp_queue
         supervisor = Supervisor(**kwargs)
         
-        supervisor.start()
+        if supervisor._enabled:
+            supervisor.start()
 
-        blocking_secs = kwargs.get("blocking_secs",None)
-        if blocking_secs:
+        blocking_secs = kwargs.get("blocking_secs", None)
+        if blocking_secs and supervisor.isEnabled:
             wait_start_time = utilities.utc_timestamp()
             while not supervisor.is_ready():
                 if supervisor.is_failed():
@@ -727,7 +755,7 @@ def init_supervisor(**kwargs):
                     return
                 time.sleep(0.05)
                 if (utilities.utc_timestamp()-wait_start_time) >= blocking_secs:
-                    print("timeout!")
+                    print("supervisor timeout!")
                     break
     except Exception as e:
         print("domain.init_supervisor(e) = %s" % e.__repr__())

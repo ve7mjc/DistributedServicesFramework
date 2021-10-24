@@ -43,6 +43,8 @@ class MessageAdapter(Component): # Component
     _throttle_messages_sec = None
     _adapter_type = None # declare in child class; eg. FileWriter
     _adapter_type_str = None
+
+    _config_name_prefix = "MessageAdapter"
     
     _message_in_types = []
     _message_out_types = []
@@ -194,17 +196,23 @@ class UdpLineMessageSource(MessageSource):
         
         super().__init__(**kwargs)
         
-        #self.config_init(**kwargs)
-        
+        listenPort = self.config.get("listen_port")
+
+        # default listen port if not specified
+        if not listenPort:
+            listenPort = 4100
+            self.log.info("UDP Listener port not specified. Defaulting to %s" % listenPort)
+
         self._listen_addr = "0.0.0.0"
-        self._listen_port = int(self.config.get("listen_port"))
+        self._listen_port = int(listenPort)
         
         self._delimiter = self.config.get("delimiter","\r\n")
         self._remove_delimiter = self.config.get("remove_delimiters",False)
         
         self._add_timestamp = self.config.get("add_timestamp",False)
         
-        mirror = self.config.get("mirror",None)
+        # UDP Mirror functionality. Copy datagrams to additional targets.
+        mirror = self.config.get("mirror", None)
         if mirror:
             for target in mirror.split(','):
                 host,port = mirror.split(":")

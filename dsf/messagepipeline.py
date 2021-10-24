@@ -45,7 +45,6 @@ from dsf.message import Message
 #from dsf.amqp.amqpmessage import AmqpMessage
 from dsf.messageprocessor import MessageProcessor
 
-
 # Stay asyncronous - stay frosty
 class MessagePipeline(Service):
 
@@ -75,7 +74,7 @@ class MessagePipeline(Service):
     _shared_data = {}
     
     def __init__(self, **kwargs):
-        self._logger_name = "pipeline"
+        self._logger_name = "MessagePipeline"
         super().__init__(**kwargs)
 
     # Initialize a Message Processor
@@ -231,29 +230,41 @@ class MessagePipeline(Service):
     # if 'class_name' kwarg is passed, it will load a different
     def add_message_adapter(self,module_name,class_name=None,**kwargs):
 
+        self.log.debug("add_message_adapter(module_name=%s,class_name=%s)" % (module_name,class_name))
+
         if self.is_failed() or self.stop_requested:
             self.log.info("Refusing to add message adapter as we are failed or stopped!")
             return
         
         adapter_direction = None
+        adapter_type_str = ""
         adapter = None
         
         kwargs["pipeline_hdl"] = self
         
         try:
+
+            # if module_name is a class type - we will instantiate it
+            if isinstance(module_name,type):
+                self.log.debug("creating instance of adapter from passed class")
+                module_name = module_name()
+
+            # Instance of MessageSource or MessageSink Class
             if (isinstance(module_name,MessageSource) or 
                     isinstance(module_name,MessageSink)):
+                adapter_type_str = type(adapter).__name__
                 adapter = module_name
                 if hasattr(adapter,"set_pipeline_hdl"):
                     adapter.set_pipeline_hdl(self)
-                adapter_type_str = type(adapter).__name__
 #                adapter.set_logger_name("adapter.%s" 
 #                    % adapter_type_str.lower())
+
+            # Name (String) of Module
             elif isinstance(module_name,str):
                 adapter_type_str = module_name
                 if "logger_name" not in kwargs:
                     kwargs["logger_name"] = ("adapter.%s" 
-                        % adapter_type_str.lower())
+                        % adapter_type_str)
                 if module_name == "amqpconsumer": # AmqpConsumer
                     kwargs["message_queue"] = self._message_source_queue
                     #kwargs["statistics"] = self.statistics
@@ -319,10 +330,10 @@ class MessagePipeline(Service):
     # timeoutsecs - number of seconds we will wait until all of the started
     #   adapters are ready. Default 3.
     def start_message_sources(self,blocking=True,timeoutsecs=3):
-        self.start_message_adapters("input",blocking,timeoutsecs)
+        self.start_message_adapters("sink",blocking,timeoutsecs)
         
     def start_message_sinks(self,blocking=True,timeoutsecs=3):
-        self.start_message_adapters("output",blocking,timeoutsecs)
+        self.start_message_adapters("source",blocking,timeoutsecs)
         
     def start_message_adapters(self,adapters_type="all",blocking=False,timeoutsecs=3):
         
@@ -330,14 +341,15 @@ class MessagePipeline(Service):
             self.log.info("Refusing to Start Adapter(s) as we are failed or stopped!")
             return
         
-        adapters = None
+        adapters = []
         
-        if adapters_type=="sink" or adapters_type=="all":
-            adapters = self._message_sinks
+        if adapters_type == "sink" or adapters_type == "all":
+            adapters = adapters + self._message_sinks
             
-        if adapters_type=="source" or adapters_type=="all":
-            adapters = self._message_sources
-        
+        if adapters_type == "source" or adapters_type == "all":
+            adapters = adapters + self._message_sources
+
+        # return if we have not produced adapters
         if not len(adapters):
             self.log.warning("start_message_adapters(%s) called but "
                 "no adapters to start!" % adapters_type)
